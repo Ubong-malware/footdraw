@@ -14,7 +14,8 @@ const START_CHIPS = +(process.env.START_CHIPS ?? 1000);
 const ANTE = +(process.env.ANTE ?? 10);
 const MAX_PLAYERS = 4;
 const TURN_MS = +(process.env.TURN_MS ?? 45000);
-const NEXT_HAND_MS = +(process.env.NEXT_HAND_MS ?? 15000);
+// Once every seated player is ready, a short countdown runs before the deal (cancelled if anyone un-readies).
+const READY_COUNTDOWN_MS = +(process.env.READY_COUNTDOWN_MS ?? 3000);
 const DATA_DIR = process.env.DATA_DIR ?? path.join(__dirname, 'data');
 const BALANCES = path.join(DATA_DIR, 'balances.json');
 
@@ -89,7 +90,7 @@ function viewFor(room, token) {
   const me = seatOf(room, token);
   return {
     code: room.code, host: room.host === token, handNo: room.handNo, ante: ANTE,
-    nextAt: room.nextAt, turnMs: TURN_MS,
+    nextAt: room.nextAt, turnMs: TURN_MS, readyCheck: room.game ? null : readyInfo(room),
     seats: room.seats.map((s, i) => {
       const p = g?.players[s.token];
       return {
@@ -98,6 +99,7 @@ function viewFor(room, token) {
         inHand: !!p, folded: p?.folded ?? false, allIn: p?.allIn ?? false, bet: p?.bet ?? 0,
         drawn: p ? p.draws.map((d) => d.length) : [], ready: g?.phase.startsWith('draw') ? !!p?.drawDone : null,
         cardsCount: p?.hand.length ?? 0, sittingOut: s.sittingOut,
+        readyUp: !!s.ready, broke: s.chips < ANTE,
       };
     }),
     game: g && {
@@ -116,9 +118,42 @@ function viewFor(room, token) {
 
 function clearTimer(room) { clearTimeout(room.timer); room.timer = null; }
 
+// ---------- Ready-up ----------
+// Players who can be dealt in: seated, not leaving, with at least the ante.
+const playable = (room) => room.seats.filter((s) => !s.leaving && s.chips >= ANTE);
+function readyInfo(room) {
+  const need = playable(room);
+  const ready = need.filter((s) => s.ready);
+  return {
+    ready: ready.length, total: need.length, min: 2,
+    waitingFor: need.filter((s) => !s.ready).map((s) => s.name),
+    broke: room.seats.filter((s) => !s.leaving && s.chips < ANTE).map((s) => s.name),
+    allReady: need.length >= 2 && ready.length === need.length,
+  };
+}
+// Re-evaluate after any ready toggle, join, leave or rebuy: deal only when ALL playable seats (min 2) are ready.
+function checkReady(room) {
+  if (room.game) return;
+  const info = readyInfo(room);
+  if (info.allReady) {
+    if (!room.nextAt) {
+      room.nextAt = Date.now() + READY_COUNTDOWN_MS;
+      clearTimer(room);
+      room.timer = setTimeout(() => {
+        room.timer = null; room.nextAt = null;
+        if (readyInfo(room).allReady) startHand(room); else broadcast(room);
+      }, READY_COUNTDOWN_MS);
+      say(room, `Everyone is ready. Dealing in ${Math.round(READY_COUNTDOWN_MS / 1000)}s…`);
+    }
+  } else if (room.nextAt) {
+    clearTimer(room); room.nextAt = null;
+    say(room, 'Deal cancelled: waiting for everyone to be ready.');
+  }
+}
+
 function startHand(room) {
   clearTimer(room); room.nextAt = null;
-  const eligible = room.seats.filter((s) => s.chips >= ANTE && !s.sittingOut);
+  const eligible = room.seats.filter((s) => s.chips >= ANTE && !s.sittingOut && !s.leaving && s.ready);
   if (eligible.length < 2) { room.game = null; say(room, 'Need at least 2 players with chips to deal.'); broadcast(room); return; }
   room.handNo++;
   room.lastResult = null;
@@ -289,8 +324,10 @@ function endHand(room) {
   // Drop seats that left mid-hand.
   room.seats = room.seats.filter((s) => !s.leaving);
   if (!room.seats.some((s) => s.token === room.host) && room.seats[0]) room.host = room.seats[0].token;
-  room.nextAt = Date.now() + NEXT_HAND_MS;
-  room.timer = setTimeout(() => { if (room.seats.filter((s) => s.chips >= ANTE && !s.sittingOut).length >= 2) startHand(room); else { room.nextAt = null; broadcast(room); } }, NEXT_HAND_MS);
+  // Everyone has to ready up again before the next deal.
+  for (const s of room.seats) s.ready = false;
+  room.nextAt = null;
+  say(room, 'Ready up for the next hand.');
   broadcast(room);
 }
 
@@ -310,10 +347,10 @@ io.on('connection', (socket) => {
     if (!s) {
       if (r.seats.length >= MAX_PLAYERS) return ack(cb, { error: 'Room is full (4 players max)' });
       const a = account(token, name);
-      s = { token, name: a.name, chips: a.chips, socketId: null, sittingOut: false };
+      s = { token, name: a.name, chips: a.chips, socketId: null, sittingOut: false, ready: false };
       r.seats.push(s);
       say(r, `${s.name} joined with ${s.chips} chips.`);
-      if (!r.game && !r.nextAt && r.handNo > 0 && r.seats.length >= 2) { r.nextAt = Date.now() + 5000; clearTimer(r); r.timer = setTimeout(() => startHand(r), 5000); }
+      checkReady(r); // a new (not-ready) player cancels any pending deal
     } else {
       if (name) s.name = account(token, name).name;
       s.leaving = false;
@@ -338,6 +375,8 @@ io.on('connection', (socket) => {
     else r.seats = r.seats.filter((x) => x !== s);
     if (!r.seats.some((x) => x.token === r.host) && r.seats[0]) r.host = r.seats[0].token;
     if (r.seats.length === 0) { clearTimer(r); rooms.delete(r.code); return; }
+    s.ready = false;
+    checkReady(r); // a leaver no longer blocks (or cancels a deal if the room drops below 2)
     broadcast(r);
   }
 
@@ -345,10 +384,15 @@ io.on('connection', (socket) => {
   socket.on('create', ({ name } = {}, cb) => { const r = createRoom(token); join(r.code, String(name ?? '').slice(0, 20).trim() || undefined, cb); });
   socket.on('join', ({ code, name } = {}, cb) => join(code, String(name ?? '').slice(0, 20).trim() || undefined, cb));
   socket.on('leave', (_, cb) => { leave(); ack(cb, { ok: true }); });
-  socket.on('start', (_, cb) => {
-    const r = room(); if (!r) return ack(cb, { error: 'No room' });
+  // Ready / not ready. Nobody can start the hand for everyone.
+  socket.on('ready', ({ ready } = {}, cb) => {
+    const r = room(); const s = r && seatOf(r, token);
+    if (!s) return ack(cb, { error: 'No room' });
     if (r.game) return ack(cb, { error: 'Hand in progress' });
-    startHand(r); ack(cb, { ok: true });
+    if (ready && s.chips < ANTE) return ack(cb, { error: 'Rebuy first: you need chips to play' });
+    const want = ready === undefined ? !s.ready : !!ready;
+    if (s.ready !== want) { s.ready = want; say(r, `${s.name} is ${want ? 'ready' : 'not ready'}.`); }
+    checkReady(r); broadcast(r); ack(cb, { ok: true, ready: s.ready });
   });
   socket.on('act', (action, cb) => { const r = room(); const err = r ? act(r, token, action ?? {}) : 'No room'; ack(cb, typeof err === 'string' ? { error: err } : { ok: true }); });
   socket.on('draw', ({ discards } = {}, cb) => { const r = room(); const err = r ? doDraw(r, token, discards) : 'No room'; ack(cb, typeof err === 'string' ? { error: err } : { ok: true }); });
@@ -357,7 +401,7 @@ io.on('connection', (socket) => {
     if (!s || r.game?.players[token]) return ack(cb, { error: 'Rebuy between hands only' });
     if (s.chips >= ANTE) return ack(cb, { error: 'You still have chips' });
     s.chips = START_CHIPS; account(token).chips = s.chips; saveBalances();
-    say(r, `${s.name} rebuys for ${START_CHIPS}.`); broadcast(r); ack(cb, { ok: true });
+    s.ready = false; say(r, `${s.name} rebuys for ${START_CHIPS}.`); checkReady(r); broadcast(r); ack(cb, { ok: true });
   });
   socket.on('disconnect', () => {
     const r = room(); if (!r) return;

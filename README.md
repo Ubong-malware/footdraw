@@ -55,8 +55,11 @@ npm run build-data      # Wikidata SPARQL + Wikipedia API → refine → TheSpor
    If everyone else folds, the last player wins without showing.
 6. 45 s per decision: timing out checks (or folds when facing a bet) and stands pat in a draw.
 7. Disconnects keep your seat; reopen the link (same browser) to resume. Leaving mid-hand folds you.
-   A player below the ante can **Rebuy 1,000** between hands. The next hand auto-deals 15 s after a showdown
-   (or press *Deal next hand*).
+   A player below the ante can **Rebuy 1,000** between hands.
+8. **Ready-up:** before every hand each seated player presses **Ready**. The server deals only when *all* seated
+   players with chips (minimum 2) are ready, after a 3 s countdown (`READY_COUNTDOWN_MS`) that is cancelled if anyone
+   un-readies or a new player joins. New joiners start not ready, leavers stop blocking, out-of-chips players
+   are skipped until they rebuy, and everyone is reset to not ready when a hand ends.
 
 Trait points: `max(0, round((log2(poolSize / traitCount) − 2) × k² × 1.2))` for `k` cards sharing a trait.
 Traits held by more than 1/8 of the pool (Forward, Born in the 1980s, 2014 FIFA World Cup…) don't count toward the hand shape.

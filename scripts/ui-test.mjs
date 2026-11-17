@@ -37,7 +37,20 @@ console.log('room code', code);
 await b.goto(`${URL}/room/${code}`);
 await b.fill('#nm', 'Bob'); await b.click('[data-act="join"]');
 await a.waitForSelector('text=Bob');
-await a.click('[data-act="start"]');
+// Ready-up: Alice readies alone → no deal, panel lists Bob as the one we're waiting for.
+await a.click('[data-act="ready"]');
+await a.waitForSelector('.seat.is-ready');
+await a.hover('.readycheck');
+await a.waitForTimeout(4000); // longer than the deal countdown
+if (await a.$('.potline')) throw new Error('Hand started with only one player ready');
+const panelText = (await a.textContent('.readycheck')).replace(/\s+/g, ' ').trim();
+if (!/1\/2 ready/.test(panelText) || !/Waiting for: Bob/.test(panelText)) throw new Error('Ready panel wrong: ' + panelText);
+console.log('ready panel:', panelText);
+await a.screenshot({ path: 'screenshots/7-ready-lobby.png' });
+await b.screenshot({ path: 'screenshots/8-ready-lobby-mobile.png' });
+await b.click('[data-act="ready"]');
+await a.waitForSelector('.potline', { timeout: 10000 });
+console.log('both ready → hand dealt');
 let shotMid = false;
 for (let i = 0; i < 200; i++) {
   for (const [p, who] of [[a, 'A'], [b, 'B']]) {

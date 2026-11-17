@@ -156,3 +156,12 @@ table.wt th:last-child,table.wt td:last-child{text-align:right;font-variant-nume
 .mini .card{cursor:pointer}.mini .ttl{font-size:.78rem}.mini .desc{display:none}
 
 @media (prefers-reduced-motion:reduce){.slot.fresh,.overlay,.dialog,.suit,.score .line,.after,.score .pts span{animation:none}}
+.seat.is-ready{border-color:var(--win)}
+.seat .rdy{color:var(--win);font-weight:700}.seat .nrdy{color:var(--ink-soft)}
+.readycheck{align-self:center;min-width:260px;max-width:420px;margin:24px auto 0;padding:12px 16px;text-align:center;background:var(--panel);border:1px solid var(--rule);border-radius:2px;cursor:help}
+.readycheck .rc-count{font-family:var(--serif);font-size:1.6rem}.readycheck .rc-count b{font-weight:400;font-variant-numeric:tabular-nums}
+.readycheck .rc-wait{font-size:.9rem;color:var(--ink-soft)}
+.readycheck .rc-list{list-style:none;margin-top:8px;font-size:.85rem;text-align:left;display:none}
+.readycheck:hover .rc-list,.readycheck:focus-within .rc-list{display:block}
+.readycheck .rc-list .ok{color:var(--win)}.readycheck .rc-list .no{color:var(--ink)}.readycheck .rc-list .broke{color:var(--ink-soft)}
+.readycheck .rc-deal{margin-top:6px;font-weight:700}

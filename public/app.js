@@ -81,7 +81,8 @@ function modalHTML() {
       <li><strong>Betting round</strong> → <strong>Draw 1</strong> → betting → <strong>Draw 2</strong> → final betting → <strong>Showdown</strong>. Draws happen at the same time; betting goes clockwise from the dealer's left.</li>
       <li>Bet, check, call, raise (no-limit, minimum raise = last raise, at least 20) or fold. All-ins create side pots.</li>
       <li>At showdown the highest FootDraw score (trait points + hand bonus) wins the pot; ties split it. If everyone else folds, the last player wins without showing.</li>
-      <li>45 seconds per turn: time out and you check (or fold if facing a bet). Out of chips? Rebuy between hands.</li></ul>
+      <li>45 seconds per turn: time out and you check (or fold if facing a bet). Out of chips? Rebuy between hands.</li>
+      <li>Before every hand, everyone presses <strong>Ready</strong>. The hand deals only once all seated players are ready.</li></ul>
     <h3>Modes</h3><ul><li><strong>Daily deck</strong>: the day's 15 cards are the same for everyone, shuffled uniquely for each player.</li><li><strong>Random deck</strong>: 15 cards from the entire pool.</li><li><strong>Play with friends</strong>: online poker rooms.</li></ul></div>`);
 }
 
@@ -239,8 +240,8 @@ function roomHTML() {
     const s = st.seats[i];
     if (!s) return `<div class="seat empty">Open seat</div>`;
     const isTurn = g?.phase === 'bet' && g.turnSeat === i;
-    let status = !s.inHand ? (g ? 'Waiting for next hand' : '') : s.folded ? 'Folded' : s.allIn ? 'All in' : g?.phase === 'draw' ? (s.ready ? `Drew ${s.drawn.at(-1) ?? 0}` : 'Choosing…') : s.bet ? `Bet ${s.bet}` : '';
-    return `<div class="seat ${isTurn ? 'turn' : ''} ${s.folded ? 'folded' : ''}">${s.dealer ? '<span class="d" title="Dealer">D</span>' : ''}<div class="nm">${esc(s.name)}${s.isYou ? ' (you)' : ''}${s.isHost ? ' ★' : ''}</div><div class="ch">${s.chips.toLocaleString()} chips</div><div class="st">${status}${s.connected ? '' : ' <span class="off">· offline</span>'}</div></div>`;
+    let status = !g ? (s.broke ? 'Out of chips' : s.readyUp ? '<span class="rdy">✓ Ready</span>' : '<span class="nrdy">Not ready</span>') : !s.inHand ? 'Waiting for next hand' : s.folded ? 'Folded' : s.allIn ? 'All in' : g?.phase === 'draw' ? (s.ready ? `Drew ${s.drawn.at(-1) ?? 0}` : 'Choosing…') : s.bet ? `Bet ${s.bet}` : '';
+    return `<div class="seat ${isTurn ? 'turn' : ''} ${s.folded ? 'folded' : ''} ${!g && s.readyUp ? 'is-ready' : ''}" title="${!g ? (s.broke ? `${esc(s.name)} is out of chips` : s.readyUp ? `${esc(s.name)} is ready` : `Waiting for ${esc(s.name)} to ready up`) : ''}">${s.dealer ? '<span class="d" title="Dealer">D</span>' : ''}<div class="nm">${esc(s.name)}${s.isYou ? ' (you)' : ''}${s.isHost ? ' ★' : ''}</div><div class="ch">${s.chips.toLocaleString()} chips</div><div class="st">${status}${s.connected ? '' : ' <span class="off">· offline</span>'}</div></div>`;
   }).join('');
   const invite = `${location.origin}/room/${st.code}`;
   let body = `<div class="roomhead"><span>Room</span><span class="code">${st.code}</span><button class="btn small" data-act="copylink" data-link="${esc(invite)}">${S.copied ? 'Link copied' : 'Copy invite link'}</button><button class="btn small" data-act="leave">Leave</button>${S.roomError ? `<span class="err">${esc(S.roomError)}</span>` : ''}</div>
@@ -272,11 +273,20 @@ function roomHTML() {
     }
     body += `<div class="below">${bar}</div>`;
   } else {
-    const can = st.seats.filter((s) => s.chips >= st.ante).length >= 2;
+    const rc = st.readyCheck ?? { ready: 0, total: 0, waitingFor: [], broke: [], allReady: false };
     const broke = meSeat && meSeat.chips < st.ante;
-    const count = st.nextAt ? `<span data-next="${st.nextAt}">Next hand in ${Math.max(0, Math.ceil((st.nextAt - Date.now()) / 1000))}s</span>` : '';
-    body += `<div class="above">${st.result ? resultHeadHTML(st) : `<p class="center-msg">${st.seats.length < 2 ? 'Waiting for friends to join… Share the invite link.' : 'Ready when you are.'}</p>`}</div>
-      <div class="below"><div class="bar"><p class="problem muted">${count}</p><div class="pilewrap"></div><div class="buttons">${broke ? '<button class="btn" data-act="rebuy">Rebuy 1,000</button>' : '<span></span>'}<button class="btn primary" data-act="start" ${can ? '' : 'disabled'}>${st.handNo ? 'Deal next hand' : 'Deal first hand'}</button></div></div></div>`;
+    const meReady = !!meSeat?.readyUp;
+    const count = st.nextAt ? `<span data-next="${st.nextAt}" data-label="Dealing in">Dealing in ${Math.max(0, Math.ceil((st.nextAt - Date.now()) / 1000))}s</span>` : '';
+    const waitText = rc.total < 2 ? 'Waiting for at least 2 players with chips… Share the invite link.'
+      : rc.allReady ? 'Everyone is ready!' : `Waiting for: ${rc.waitingFor.map(esc).join(', ')}`;
+    // The ready-check panel: count, who we're waiting on, and the per-player list (also as a hover tooltip).
+    const panel = `<div class="readycheck" role="status" aria-live="polite" title="${esc(waitText)}">
+        <div class="rc-count"><b>${rc.ready}/${rc.total}</b> ready</div>
+        <div class="rc-wait">${waitText}</div>
+        <ul class="rc-list">${st.seats.map((s) => `<li class="${s.broke ? 'broke' : s.readyUp ? 'ok' : 'no'}">${s.broke ? '–' : s.readyUp ? '✓' : '…'} ${esc(s.name)}${s.isYou ? ' (you)' : ''}${s.broke ? ' · out of chips' : ''}</li>`).join('')}</ul>
+        ${count ? `<div class="rc-deal">${count}</div>` : ''}</div>`;
+    body += `<div class="above">${st.result ? resultHeadHTML(st) : ''}${panel}</div>
+      <div class="below"><div class="bar"><p class="problem muted" title="${esc(waitText)}">${rc.ready}/${rc.total} ready${rc.waitingFor.length && !rc.allReady ? ` · waiting for ${rc.waitingFor.map(esc).join(', ')}` : ''}</p><div class="pilewrap"></div><div class="buttons">${broke ? '<button class="btn" data-act="rebuy">Rebuy 1,000</button>' : '<span></span>'}<button class="btn ${meReady ? '' : 'primary'}" data-act="ready" data-ready="${meReady ? 0 : 1}" ${broke ? 'disabled' : ''} aria-pressed="${meReady}">${meReady ? '✓ Ready (click to cancel)' : st.handNo ? 'Ready for next hand' : 'Ready'}</button></div></div></div>`;
     if (st.result) after = resultDetailHTML(st);
   }
   after += `<div class="log" aria-live="polite">${st.log.slice().reverse().map((l) => `<div>${esc(l.msg)}</div>`).join('')}</div><p class="foot">Text from Wikipedia, CC BY-SA. Traits from Wikidata.</p>`;
@@ -349,7 +359,7 @@ $root.addEventListener('click', async (e) => {
     }
     case 'leave': await emit('leave'); S.room = null; sessionStorage.removeItem('fd_room'); history.pushState(null, '', '/'); S.view = 'lobby'; return render();
     case 'copylink': await navigator.clipboard?.writeText(el.dataset.link).catch(() => {}); S.copied = true; render(); setTimeout(() => { S.copied = false; render(); }, 1500); return;
-    case 'start': return emit('start');
+    case 'ready': return emit('ready', { ready: el.dataset.ready === '1' });
     case 'rebuy': return emit('rebuy');
     case 'fold': case 'check': case 'call': return emit('act', { type: a });
     case 'raise': return emit('act', { type: 'raise', amount: S.raise });
@@ -370,7 +380,7 @@ addEventListener('keydown', (e) => { if (e.key === 'Escape' && (S.modal || S.men
 // Countdown bars without full re-renders.
 setInterval(() => {
   document.querySelectorAll('[data-deadline]').forEach((el) => { el.style.width = `${Math.max(0, Math.min(100, (+el.dataset.deadline - Date.now()) / (S.room?.turnMs ?? 45000) * 100))}%`; });
-  document.querySelectorAll('[data-next]').forEach((el) => { el.textContent = `Next hand in ${Math.max(0, Math.ceil((+el.dataset.next - Date.now()) / 1000))}s`; });
+  document.querySelectorAll('[data-next]').forEach((el) => { el.textContent = `${el.dataset.label ?? 'Next hand in'} ${Math.max(0, Math.ceil((+el.dataset.next - Date.now()) / 1000))}s`; });
 }, 1000);
 addEventListener('popstate', () => { if (!location.pathname.startsWith('/room/')) { S.view = 'home'; render(); } });
 
