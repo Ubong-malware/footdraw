@@ -1,5 +1,5 @@
-app = "footdraw"            # change to a unique name
-primary_region = "iad"
+app = "footdraw-ubong"
+primary_region = "yyz"
 
 [build]
 
