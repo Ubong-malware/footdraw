@@ -169,3 +169,21 @@ table.wt th:last-child,table.wt td:last-child{text-align:right;font-variant-nume
 .hint{margin-top:6px;font-size:.85rem;color:var(--ink-soft)}
 table.league{margin:12px auto 8px;max-width:640px}table.league td:first-child,table.league th:first-child{width:3.5em}
 table.league tr.lead td{font-weight:700}table.league td,table.league th{text-align:left}table.league td:nth-child(n+3),table.league th:nth-child(n+3){text-align:right}
+.connbar{position:fixed;top:0;left:0;right:0;z-index:30;padding:8px 12px;text-align:center;font-size:.9rem;font-weight:700;color:var(--page);background:var(--ink)}
+
+/* Multiplayer stats / trophy room / saved results */
+.mpnav{margin:-4px 0 14px}.mpnav a,.finallinks a,.mpstats a,.trophies a,table.full a{color:var(--link)}.mpnav a:hover{text-decoration:underline}
+.mpstats{max-width:880px}.mpstats::after{content:"";display:table;clear:both}
+table.infobox{float:right;width:270px;margin:0 0 16px 20px;font-size:.85rem;background:var(--rule-soft);border:1px solid var(--rule);border-collapse:collapse}
+table.infobox caption{padding:6px;font-family:var(--serif);font-size:1.25rem;font-weight:700;background:var(--rule-soft);border:1px solid var(--rule);border-bottom:0}
+table.infobox th,table.infobox td{padding:4px 8px;text-align:left;vertical-align:top;border-top:1px solid var(--rule)}table.infobox th{width:48%;font-weight:600}
+@media (max-width:640px){table.infobox{float:none;width:100%;margin:0 0 16px}}
+.trophies{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px;max-width:880px}
+.trophy{padding:12px;text-align:center;background:var(--panel);border:1px solid var(--rule);border-radius:2px}.trophy.perfect{border-color:#c9a227;box-shadow:inset 0 0 0 1px #c9a227}
+.trophy .cup{font-size:2.6rem;line-height:1.1}.trophy .tt{font-family:var(--serif);font-size:1.1rem}.trophy .tp{margin:4px 0;font-size:.9rem}.trophy .tp b{font-family:var(--serif);font-size:1.5rem}
+.trophy .td{font-size:.8rem;color:var(--ink-soft)}.tag2{display:inline-block;margin:4px 0;padding:1px 6px;font-size:.72rem;font-weight:700;color:#7a5c00;background:#fbf0c8;border:1px solid #e3cf86;border-radius:2px}
+ul.badges{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;max-width:880px;list-style:none;padding:0}
+ul.badges li{display:grid;grid-template-columns:auto 1fr;column-gap:8px;padding:8px;font-size:.85rem;background:var(--panel);border:1px solid var(--rule)}
+ul.badges .bi{grid-row:span 2;font-size:1.5rem}ul.badges small{color:var(--ink-soft)}ul.badges li.locked{opacity:.55}
+.scroll{overflow-x:auto;max-width:100%}table.full{min-width:560px}table.full td:nth-child(n+3),table.full th:nth-child(n+3){text-align:right}
+.mpstats .section h2{overflow:hidden}

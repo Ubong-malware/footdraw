@@ -66,7 +66,28 @@ for (let round = 1; round <= 10; round++) {
     }
     await p.click('[data-act="mpstand"]');
   }
-  // Round over: league table shows; check order + ready for the next round.
+  // Round over: each player first sees their own hand's points tally up (client-side reveal), then the table.
+  await a.waitForSelector('[data-act="skipreveal"]', { timeout: 15000 });
+  if (round === 1) {
+    // A watches the whole reveal: the number must count up and land on A's round score; no socket traffic meanwhile.
+    const msgs0 = await a.evaluate(() => window.__fd.msgs);
+    await b.click('[data-act="skipreveal"]').catch(() => {}); await b.waitForSelector('table.league', { timeout: 5000 });
+    const seen = [];
+    for (let i = 0; i < 100 && await a.$('[data-act="skipreveal"]'); i++) {
+      const v = await a.$eval('.score .pts span', (e) => +e.textContent).catch(() => null); if (v != null && v !== seen.at(-1)) seen.push(v);
+      if (i === 14) await a.screenshot({ path: 'screenshots/4b-round-reveal.png', fullPage: true });
+      await a.waitForTimeout(120);
+    }
+    await a.waitForSelector('table.league', { timeout: 15000 });
+    const mine = await a.evaluate(() => { const m = window.__lastState?.match; return m?.last?.results[m.lastYou]?.points; });
+    if (seen.some((v, i) => i && v < seen[i - 1])) throw new Error(`Reveal tally went down: ${seen}`);
+    if (mine == null || seen.at(-1) !== mine) throw new Error(`Reveal ended at ${seen.at(-1)} but round score is ${mine}`);
+    const extra = await a.evaluate((m0) => window.__fd.msgs - m0, msgs0);
+    if (extra > 2) throw new Error(`Reveal caused ${extra} socket messages`);
+    console.log(`reveal tally (A): ${seen.join(' → ')} · ${extra} socket msgs during reveal (B's skip)`);
+  } else {
+    for (const p of [a, b]) await p.click('[data-act="skipreveal"]', { timeout: 3000 }).catch(() => {});
+  }
   await a.waitForSelector('table.league', { timeout: 15000 });
   const totals = await a.$$eval('table.league tbody tr td:last-child', (els) => els.map((e) => +e.textContent));
   if (totals.some((t, i) => i && t > totals[i - 1])) throw new Error('League table not sorted');
@@ -79,6 +100,23 @@ await a.screenshot({ path: 'screenshots/6-final-results.png', fullPage: true });
 console.log('final:', (await a.textContent('.score h1')).trim(), '|', (await a.$$eval('table.league tbody tr', (r) => r.map((x) => x.textContent.replace(/\s+/g, ' ').trim()))).join(' / '));
 const bodyText = await a.textContent('body');
 if (/chip|poker|rebuy/i.test(bodyText)) throw new Error('Chip/poker text still visible');
+// Saved results, multiplayer stats and trophy room (from SQLite), reached from the final screen.
+await a.click('text=Permanent link to this table'); await a.waitForSelector('table.full');
+const savedRows = await a.$$eval('table.full tbody tr', (r) => r.length); if (savedRows !== 2) throw new Error('Saved results missing rows');
+await a.screenshot({ path: 'screenshots/11-saved-results.png', fullPage: true });
+for (const p of [a, b]) {
+  await p.goto(`${URL}/stats`); await p.waitForSelector('table.infobox');
+  const mp = await p.$eval('table.infobox', (t) => t.textContent);
+  if (!/Matches played\s*1/.test(mp)) throw new Error('Stats: matches played should be 1: ' + mp);
+}
+await a.screenshot({ path: 'screenshots/12-mp-stats.png', fullPage: true });
+const champIsA = /Alice is the champion/.test(bodyText);
+const champPage = champIsA ? a : b;
+await champPage.click('.mpnav >> text=Trophy room'); await champPage.waitForSelector('.trophy');
+await champPage.screenshot({ path: 'screenshots/13-trophy-room.png', fullPage: true });
+const earned = await champPage.$$eval('ul.badges li.earned b', (els) => els.map((e) => e.textContent));
+if (!earned.includes('First title')) throw new Error('First title badge missing');
+console.log('stats/trophies ok · champion badges:', earned.join(', '));
 await browser.close();
 if (errors.length) { console.error('Browser errors:\n' + errors.join('\n')); process.exit(1); }
 console.log('UI PASS');

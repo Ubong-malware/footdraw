@@ -25,7 +25,11 @@ Tests (server must be running):
 node scripts/sim.mjs http://localhost:8080 4      # 2–4 bots play a full 10-round match: ready-up, kept cards never
                                                   # change, results = final hands, totals = sum of rounds, table order
 node scripts/sim-leave.mjs http://localhost:8080  # leavers never block; match ends if one player remains
-node scripts/ui-test.mjs http://localhost:8080    # Playwright: solo game + a full 2-browser match, writes screenshots/
+node scripts/ui-test.mjs http://localhost:8080    # Playwright: solo game + a full 2-browser match (round reveal,
+                                                  # stats, trophy room, saved results), writes screenshots/
+node scripts/sim-restart.mjs                      # own server: SIGINT mid round 2 + SIGKILL mid round 3; the match
+                                                  # must resume with identical hands, steps and scores
+node scripts/live-test.mjs https://your-app 3 45  # real browsers vs a deployed site: 3 rounds, 45 s idle at results
 ```
 
 Rebuild the card pool (no keys needed, ~10 minutes):
@@ -64,7 +68,10 @@ npm run build-data      # Wikidata SPARQL + Wikipedia API → player audit → r
 4. Kept cards never change: the server only replaces the exact positions you discarded. Each discard request
    carries the hand you were looking at and the discard step, so stale or double-clicked requests are rejected.
 5. A round ends when everyone has finished. The round timer is 2 minutes (`ROUND_MS`), and anyone still playing auto-stands.
-   The round result shows every player's exact final 5 cards (cards drawn in the last discard are tagged *New*), their
+   First, **your own hand's points tally up** (the same reveal as solo: suits pop in, each shared trait adds its
+   points, then the hand bonus, counting up to your score). **Skip to results** jumps straight on. This runs only in
+   your browser (no extra network traffic) and plays once per round, not again after a reload or reconnect.
+   Then the round result shows every player's exact final 5 cards (cards drawn in the last discard are tagged *New*), their
    trait table and score.
 6. **League table** after every round: position, player, this round's score, rounds won, best round, total points,
    sorted by total. The highest score wins the round (ties: whoever finished first).
@@ -75,13 +82,35 @@ npm run build-data      # Wikidata SPARQL + Wikipedia API → player audit → r
 Trait points: `max(0, round((log2(poolSize / traitCount) − 2) × k² × 1.2))` for `k` cards sharing a trait.
 Traits held by more than 1/8 of the pool (Forward, Born in the 1980s, 2014 FIFA World Cup…) don't count toward the hand shape.
 
+## Saved matches, stats and trophies (SQLite)
+
+Every state change is written to SQLite (`$DATA_DIR/footdraw.sqlite`, Node's built-in `node:sqlite`, no native
+modules) before it is broadcast: rooms, players (browser token + name), matches, each round's deck, every player's
+shuffle/hand/discards/score, and league totals. On boot the server rebuilds every room active in the last 24 h, so a
+restart, crash or deploy no longer ends a match. Clients show “Reconnecting…”, retry with backoff and rejoin their seat
+and current round automatically (anyone mid-round gets at least 45 s back on the clock).
+
+Finished matches stay in the database:
+
+* `/results/CODE/N`: permanent final table with every round's score (linked from the final screen).
+* `/stats` (**Multiplayer stats**): matches played, league titles, win %, rounds played and won, average and best round
+  (with its hand), highest match total, average finishing position, most-used cards, most-scored traits, hands, and
+  recent matches with links to each final table.
+* `/trophies` (**Trophy room**): one trophy per league title (date, room, opponents, final points, winning margin)
+  plus milestone badges (first title, hat-trick, 5 and 10 titles, perfect match, 200+ round, Flush, Four of a Kind,
+  1,500+ match, 10 matches played).
+
+Stats are keyed by your browser token (sent in a header, never shown or put in URLs).
+
 ## Deploy so friends can join
 
-It is one Node process (Express + Socket.IO, in-memory rooms) — run a **single instance**.
+It is one Node process (Express + Socket.IO + SQLite): run a **single instance** with a persistent disk at `DATA_DIR`.
 
 * **Render**: push to GitHub → New → Blueprint (uses `render.yaml`) or Web Service with `npm ci` / `node server.js`.
   The free plan sleeps when idle, which ends any match in progress.
-* **Fly.io**: `fly launch --copy-config` (uses `Dockerfile` + `fly.toml`), then `fly deploy`.
+* **Fly.io**: `fly launch --copy-config` (uses `Dockerfile` + `fly.toml`, a volume at `/data`, machine always on), then
+  `fly deploy`. Note: Fly **trial** accounts stop every machine after 5 minutes. Matches now survive that (the restart
+  takes ~10 s and everyone rejoins), but adding a card in the Fly dashboard removes the interruptions.
 * **Railway**: New project → Deploy from repo; it detects `npm start`.
 
 WebSockets work out of the box on all three. Share `https://your-app/room/CODE`.

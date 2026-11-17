@@ -55,7 +55,7 @@ function topbar() {
     <button type="button" class="burger ${S.menu ? 'open' : ''}" data-act="menu" aria-label="Main menu" aria-expanded="${S.menu}"><span></span><span></span><span></span></button>
     <a class="logo" href="/" data-act="home"><b>${BRAND}</b><small>The free football card game</small></a>
     <button type="button" class="help" data-act="help" aria-label="How to play" aria-haspopup="dialog"><svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-2.9 3-2.9 3"/><path d="M12 17h.01"/></svg></button>
-    ${S.menu ? `<nav class="menu"><h2>Main menu</h2><ul><li><button data-act="home">Main page</button></li><li><button data-act="page" data-page="stats">Stats</button></li><li><button data-act="page" data-page="about">About</button></li></ul>
+    ${S.menu ? `<nav class="menu"><h2>Main menu</h2><ul><li><button data-act="home">Main page</button></li><li><button data-act="page" data-page="stats">Stats</button></li><li><button data-act="mpage" data-page="mpstats">Multiplayer stats</button></li><li><button data-act="mpage" data-page="trophies">Trophy room</button></li><li><button data-act="page" data-page="about">About</button></li></ul>
       <p>Play</p><ul>${MODES.map((m) => `<li><button data-act="mode" data-mode="${m.mode}">${m.name}</button></li>`).join('')}</ul></nav>` : ''}
   </div>`;
 }
@@ -80,9 +80,10 @@ function modalHTML() {
       <li>Everyone presses <strong>Ready</strong>; the match starts only when all players are ready, and again before every round.</li>
       <li>Each round is a normal FootDraw game. All players get the <strong>same 15-card deck</strong> (a new deck every round), each in their own shuffle, and play at the same time: tap cards to swap out, two discards, or Stand. Cards you keep never change.</li>
       <li>A round ends when everyone has finished (2 minutes max; anyone still playing auto-stands).</li>
+      <li>When the round ends, your hand's points tally up, then everyone's hands and the table appear (or tap <strong>Skip to results</strong>).</li>
       <li>Your round score is added to the <strong>league table</strong>. Highest score wins the round (ties: whoever finished first).</li>
       <li>After round 10 the top of the table is champion. Level on points? Then most rounds won, then best single round, then fastest total finishing time.</li></ul>
-    <h3>Modes</h3><ul><li><strong>Daily deck</strong>: the day's 15 cards are the same for everyone, shuffled uniquely for each player.</li><li><strong>Random deck</strong>: 15 cards from the entire pool.</li><li><strong>Play with friends</strong>: a 10-round league match against up to 3 friends.</li></ul></div>`);
+    <h3>Modes</h3><ul><li><strong>Daily deck</strong>: the day's 15 cards are the same for everyone, shuffled uniquely for each player.</li><li><strong>Random deck</strong>: 15 cards from the entire pool.</li><li><strong>Play with friends</strong>: a 10-round league match against up to 3 friends. Matches are saved, so a dropped connection or server restart doesn't end them. See <strong>Multiplayer stats</strong> and the <strong>Trophy room</strong> in the menu.</li></ul></div>`);
 }
 
 // ---------- Views ----------
@@ -92,11 +93,17 @@ function render() {
   else if (S.view === 'about') body = pageHead(`About ${BRAND}`) + `<div class="prose"><p>${BRAND} is five-card draw played with Wikipedia's football articles: famous players, clubs, national teams and tournaments. Card traits come from Wikidata, texts and images from Wikipedia, and live squad info from TheSportsDB.</p><p>Inspired by the format of Wikdraw. If you enjoy the game, consider <a href="https://donate.wikimedia.org/" target="_blank" rel="noopener">donating to Wikipedia</a>.</p></div>`;
   else if (S.view === 'solo') ({ body, after } = soloHTML());
   else if (S.view === 'lobby') body = lobbyHTML();
+  else if (S.view === 'mpstats') body = pageHead('Multiplayer stats') + mpStatsHTML();
+  else if (S.view === 'trophies') body = pageHead('Trophy room') + trophiesHTML();
+  else if (S.view === 'results') body = pageHead('Match results') + savedResultsHTML();
   else if (S.view === 'room') ({ body, after } = roomHTML());
   else body = pageHead(`Welcome to ${BRAND}`) + `<div class="modes">${MODES.map((m) => `<button type="button" class="mode" data-act="mode" data-mode="${m.mode}"><strong>${m.name}</strong><span>${m.blurb}</span></button>`).join('')}</div>`;
   const active = document.activeElement?.id;
-  $root.innerHTML = `<main class="main"><div class="screen">${topbar()}${body}</div>${after}</main>${modalHTML()}`;
+  const banner = S.view === 'room' && S.conn ? `<div class="connbar" role="status">${S.conn === 'restarting' ? 'The server is restarting. Your match is saved, reconnecting…' : 'Connection lost. Reconnecting…'}</div>` : '';
+  window.__fd && window.__fd.renders++;
+  $root.innerHTML = `${banner}<main class="main"><div class="screen">${topbar()}${body}</div>${after}</main>${modalHTML()}`;
   if (active && document.getElementById(active)) document.getElementById(active).focus();
+  animateCount();
 }
 
 // ---------- Stats (local) ----------
@@ -116,6 +123,71 @@ function statsHTML() {
     return `<section><h2>${name}</h2>${!s?.games ? '<p class="note">No games yet.</p>' : `<dl><div><dt>High score</dt><dd>${s.best} pts</dd></div><div><dt>Games</dt><dd>${s.games.toLocaleString()}</dd></div></dl>
       <table class="wt"><thead><tr><th scope="col">Hand</th><th scope="col">Count</th></tr></thead><tbody>${HANDS.map((h) => `<tr><td>${h}</td><td>${(s.hands[h] ?? 0).toLocaleString()}</td></tr>`).join('')}</tbody></table>`}</section>`;
   }).join('')}<p class="note">Stats belong to this browser. Clearing its data or starting in a different browser won't carry the data over.</p></div>`;
+}
+
+// ---------- Multiplayer stats, trophy room, saved results (from the server's SQLite DB) ----------
+const fmtDate = (t) => new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+const resultsLink = (code, no, text) => `<a href="/results/${esc(code)}/${+no}" data-act="results" data-code="${esc(code)}" data-no="${+no}">${text}</a>`;
+async function loadMpStats() {
+  S.mp = { loading: true }; render();
+  try { const r = await fetch('/api/stats', { headers: { 'x-fd-token': token } }); S.mp = r.ok ? { data: await r.json() } : { error: 'Could not load stats.' }; }
+  catch { S.mp = { error: 'Could not load stats.' }; }
+  if (S.view === 'mpstats' || S.view === 'trophies') render();
+}
+async function loadResults(code, no) {
+  S.saved = { loading: true, code, no }; render();
+  try { const r = await fetch(`/api/match/${encodeURIComponent(code)}/${+no}`); S.saved = r.ok ? { data: await r.json() } : { error: 'That match was not found.' }; }
+  catch { S.saved = { error: 'Could not load the match.' }; }
+  if (S.view === 'results') render();
+}
+function goPage(view, url) {
+  S.view = view; S.menu = false; history.pushState(null, '', url);
+  if (view === 'mpstats' || view === 'trophies') loadMpStats(); else render();
+}
+const mpNav = (here) => `<p class="note mpnav">${[['mpstats', '/stats', 'Multiplayer stats'], ['trophies', '/trophies', 'Trophy room']].map(([v, u, t]) => v === here ? `<strong>${t}</strong>` : `<a href="${u}" data-act="mpage" data-page="${v}">${t}</a>`).join(' · ')}</p>`;
+function mpStatsHTML() {
+  const mp = S.mp ?? {};
+  if (mp.loading) return '<p class="note">Loading…</p>';
+  if (mp.error) return `<p class="err">${esc(mp.error)}</p>`;
+  const d = mp.data;
+  if (!d?.matchesPlayed && !d?.roundsPlayed) return `${mpNav('mpstats')}<p class="prose">No finished multiplayer matches yet for this browser. Play a 10-round match with friends and your record will appear here.</p>`;
+  const kv = (k, v) => `<tr><th scope="row">${k}</th><td>${v}</td></tr>`;
+  const br = d.bestRound;
+  return `${mpNav('mpstats')}<div class="mpstats">
+    <table class="infobox"><caption>${esc(d.name ?? 'You')}</caption><tbody>
+      ${kv('Matches played', d.matchesPlayed)}${kv('League titles', `${d.titles} 🏆`)}${kv('Win %', `${d.winPct}%`)}
+      ${kv('Rounds played', d.roundsPlayed)}${kv('Rounds won', d.roundsWon)}${kv('Average round', `${d.avgRound} pts`)}
+      ${kv('Best round', br ? `${br.points} pts<br><small>${esc(br.hand)}</small>` : '–')}
+      ${kv('Highest match total', d.highestTotal ? `${d.highestTotal.total} pts` : '–')}${kv('Average finish', d.avgPos ? ord(Math.round(d.avgPos)) + ` <small>(${d.avgPos})</small>` : '–')}
+    </tbody></table>
+    <p class="prose"><b>${esc(d.name ?? 'You')}</b> has played <b>${d.matchesPlayed}</b> FootDraw league match${d.matchesPlayed === 1 ? '' : 'es'} and won <b>${d.titles}</b> title${d.titles === 1 ? '' : 's'}${d.perfect ? `, including ${d.perfect} perfect match${d.perfect === 1 ? '' : 'es'}` : ''}.${br ? ` Their best single round was a ${esc(br.hand)} worth ${br.points} points (${br.cards.map(esc).join(', ')}).` : ''}</p>
+    <section class="section"><h2>Most-used cards</h2><table class="wt"><thead><tr><th scope="col">Card</th><th scope="col">Final hands</th></tr></thead><tbody>${d.topCards.map((c) => `<tr><td><a href="${wikiUrl(c.name)}" target="_blank" rel="noopener noreferrer">${esc(c.name)}</a></td><td>${c.count}</td></tr>`).join('')}</tbody></table></section>
+    <section class="section"><h2>Most-scored traits</h2><table class="wt"><thead><tr><th scope="col">In common</th><th scope="col">Rounds</th></tr></thead><tbody>${d.topTraits.map((c) => `<tr><td>${esc(c.name)}</td><td>${c.count}</td></tr>`).join('')}</tbody></table></section>
+    <section class="section"><h2>Hands</h2><table class="wt"><thead><tr><th scope="col">Hand</th><th scope="col">Count</th></tr></thead><tbody>${HANDS.map((h) => `<tr><td>${h}</td><td>${d.hands[h] ?? 0}</td></tr>`).join('')}</tbody></table></section>
+    <section class="section"><h2>Recent matches</h2>${d.history.length ? `<table class="wt"><thead><tr><th scope="col">Date</th><th scope="col">Opponents</th><th scope="col">Finish</th><th scope="col">Points</th><th scope="col">Final table</th></tr></thead><tbody>${d.history.map((h) => `<tr><td>${fmtDate(h.at)}</td><td>${h.opponents.map(esc).join(', ')}</td><td>${h.won ? '🏆 ' : ''}${ord(h.pos)} of ${h.players}</td><td>${h.total}</td><td>${resultsLink(h.code, h.no, 'View')}</td></tr>`).join('')}</tbody></table>` : '<p class="note">No finished matches yet.</p>'}</section>
+    <p class="note">Stats are tied to this browser (and the name you played under). Rounds count once a round has ended.</p></div>`;
+}
+function trophiesHTML() {
+  const mp = S.mp ?? {};
+  if (mp.loading) return '<p class="note">Loading…</p>';
+  if (mp.error) return `<p class="err">${esc(mp.error)}</p>`;
+  const d = mp.data ?? { trophies: [], badges: [] };
+  return `${mpNav('trophies')}<p class="prose">Every league title ${esc(d.name ?? 'you')} won${d.trophies.length ? ` · <b>${d.trophies.length}</b> in the cabinet` : ''}.</p>
+    <div class="trophies">${d.trophies.length ? d.trophies.map((t) => `<div class="trophy${t.perfect ? ' perfect' : ''}"><div class="cup" aria-hidden="true">🏆</div><div class="tt">League champion</div>
+      <div class="td">${fmtDate(t.at)} · Room ${esc(t.code)}</div><div class="tp"><b>${t.total}</b> pts</div>
+      <div class="td">${t.runnerUp ? `won by ${t.margin} pts over ${esc(t.runnerUp)}` : 'unopposed'}</div><div class="td">vs ${t.opponents.map(esc).join(', ') || '—'}</div>
+      ${t.perfect ? '<div class="tag2">Perfect match</div>' : ''}<div class="td">${resultsLink(t.code, t.no, 'Final table')}</div></div>`).join('') : '<p class="note">No titles yet. Win a 10-round match to lift your first trophy.</p>'}</div>
+    <section class="section"><h2>Milestones</h2><ul class="badges">${d.badges.map((b) => `<li class="${b.earned ? 'earned' : 'locked'}" title="${esc(b.desc)}"><span class="bi" aria-hidden="true">${b.earned ? '🏅' : '🔒'}</span><b>${esc(b.label)}</b><small>${esc(b.desc)}</small></li>`).join('')}</ul></section>`;
+}
+function savedResultsHTML() {
+  const sv = S.saved ?? {};
+  if (sv.loading) return '<p class="note">Loading…</p>';
+  if (sv.error || !sv.data) return `<p class="err">${esc(sv.error ?? 'Not found')}</p>`;
+  const d = sv.data; const n = Math.max(...d.rows.map((r) => r.rounds.length), 0);
+  return `<p class="prose">Room <b>${esc(d.code)}</b>, match ${d.no} · ${fmtDate(d.updatedAt)} · ${d.phase === 'final' ? `<b>${esc(d.champion)}</b> won the title with ${d.championPts} pts${d.championWhy ? ` (${esc(d.championWhy)})` : ''}` : `in progress, round ${d.round}`}.</p>
+    <div class="scroll"><table class="wt league full"><thead><tr><th scope="col">Pos</th><th scope="col">Player</th>${Array.from({ length: n }, (_, i) => `<th scope="col">R${i + 1}</th>`).join('')}<th scope="col">Won</th><th scope="col">Total</th></tr></thead><tbody>
+    ${d.rows.map((r) => `<tr class="${r.pos === 1 ? 'lead' : ''}"><td>${d.phase === 'final' && r.pos === 1 ? '🏆' : ord(r.pos)}</td><td>${esc(r.name)}${r.left ? ' <span class="muted">(left)</span>' : ''}</td>${Array.from({ length: n }, (_, i) => `<td>${r.rounds[i] ?? ''}</td>`).join('')}<td>${r.roundsWon}</td><td><strong>${r.total}</strong></td></tr>`).join('')}</tbody></table></div>
+    ${mpNav('')}`;
 }
 
 // ---------- Solo game ----------
@@ -155,7 +227,15 @@ function finishSolo(restored = false) {
   g.result = { ...r, cards, stages: g.stages.map((h) => scoreHand(h.map((id) => pool.byId.get(id)), pool.meta)), best: bestHand(deckCards, pool.meta) };
   if (!restored) { g.pb = recordStats(g.mode, r); }
   g.done = true; saveSolo();
-  // Reveal sequence (mirrors the original: suits pop in, hand name, each match, bonus, total).
+  const rv = buildReveal(r);
+  Object.assign(g, rv, { step: restored || reduced() ? rv.scenes.length - 1 : 0 });
+  countShown = restored || reduced() ? r.points : 0;
+  const tick = () => { if (S.solo !== g || g.step >= g.scenes.length - 1) return; setTimeout(() => { if (S.solo !== g) return; g.step++; if (S.view === 'solo') render(); tick(); }, g.scenes[g.step].hold); };
+  tick(); render();
+}
+// Reveal sequence (mirrors the original: suits pop in, hand name, each match tallies up, bonus, total).
+// Used by solo games and by each player's own hand at the end of a multiplayer round. Purely client-side.
+function buildReveal(r) {
   const { first, second } = suitGroups(r.matches.filter((m) => m.shape !== false));
   const suitAt = [0, 1, 2, 3, 4].map((i) => first?.cards.includes(i) ? '♥️' : second?.cards.includes(i) ? '♣️' : null);
   const order = ['♥️', '♣️'].flatMap((s) => suitAt.flatMap((x, i) => (x === s ? [i] : [])));
@@ -167,9 +247,23 @@ function finishSolo(restored = false) {
   r.matches.forEach((m, i) => push({ matches: i + 1, points: sc.points + m.points }, 800));
   if (BONUS[r.hand] > 0) push({ bonus: true, points: sc.points + BONUS[r.hand] }, 1000);
   push({ points: r.points, done: true }, 0);
-  Object.assign(g, { scenes, suitAt, order, step: restored || reduced() ? scenes.length - 1 : 0 });
-  const tick = () => { if (S.solo !== g || g.step >= scenes.length - 1) return; setTimeout(() => { if (S.solo !== g) return; g.step++; if (S.view === 'solo') render(); tick(); }, scenes[g.step].hold); };
-  tick(); render();
+  return { scenes, suitAt, order };
+}
+// The score number counts up between tally steps (animated in place, no re-render).
+let countShown = 0, countRaf = 0;
+function animateCount() {
+  const el = document.querySelector('.score .pts span[data-to]'); if (!el) return;
+  const to = +el.dataset.to, from = Math.min(countShown, to);
+  cancelAnimationFrame(countRaf); countShown = to;
+  if (from === to || reduced()) { el.textContent = to; return; }
+  const t0 = performance.now(), dur = Math.min(650, 120 + (to - from) * 12);
+  el.textContent = from;
+  const step = (now) => { const k = Math.min(1, (now - t0) / dur); el.textContent = Math.round(from + (to - from) * (1 - (1 - k) ** 3)); if (k < 1) countRaf = requestAnimationFrame(step); };
+  countRaf = requestAnimationFrame(step);
+}
+function revealLine(r, scene, doneText) {
+  const cur = scene.done || scene.bonus ? null : r.matches[scene.matches - 1];
+  return { cur, line: scene.done ? doneText : scene.bonus ? `${r.hand} bonus <strong>+${BONUS[r.hand]}</strong>` : cur ? `${esc(cur.label)} <strong>+${cur.points}</strong>` : '' };
 }
 function soloHTML() {
   const g = S.solo;
@@ -183,14 +277,10 @@ function soloHTML() {
   }
   const r = g.result; const { scene } = g.scenes[Math.min(g.step, g.scenes.length - 1)];
   const shown = new Set(g.order.slice(0, scene.suits));
-  const curMatch = scene.done || scene.bonus ? null : r.matches[scene.matches - 1];
   const title = g.mode === 'daily' ? g.date : 'Random';
-  let line = '';
-  if (scene.done) line = `${BRAND} ${title}`;
-  else if (scene.bonus) line = `${r.hand} bonus <strong>+${BONUS[r.hand]}</strong>`;
-  else if (curMatch) line = `${esc(curMatch.label)} <strong>+${curMatch.points}</strong>`;
+  const { cur: curMatch, line } = revealLine(r, scene, `${BRAND} ${title}`);
   const pb = g.pb; const share = shareText(BRAND, title, r.hand, r.points, r.stages) + `\n${location.origin}`;
-  const body = `<div class="above"><div class="score" style="opacity:${scene.name ? 1 : 0}"><h1>${r.hand}</h1><p class="pts"><span>${scene.points}</span> pts</p><p class="line">${line}</p>
+  const body = `<div class="above"><div class="score" style="opacity:${scene.name ? 1 : 0}"><h1>${r.hand}</h1><p class="pts"><span data-to="${scene.points}">${Math.min(countShown, scene.points)}</span> pts</p><p class="line">${line}</p>
       <p class="pb">${scene.done && pb ? (pb.previous !== null && r.points > pb.previous ? `<strong>New personal best! (was ${pb.previous} pts)</strong>` : `Personal best: ${pb.points} pts`) : ''}</p></div></div>
     <div class="grid">${cards.map((c, i) => cardHTML(c, { suit: shown.has(i) ? g.suitAt[i] : null, hl: curMatch?.cards.includes(i) })).join('')}</div>
     <div class="below">${scene.done ? `<div class="after"><div class="row"><button class="btn" data-act="copy">Copy result</button><button class="btn primary" data-act="mode" data-mode="random">${g.mode === 'daily' ? 'Play a random deck' : 'Play again'}</button></div><pre class="share">${esc(share)}</pre></div>` : ''}</div>`;
@@ -205,8 +295,12 @@ let socket = null;
 function connect() {
   if (socket) return socket;
   if (!window.io) { S.roomError = 'Multiplayer server not reachable.'; return null; }
-  socket = io({ auth: { token } });
+  // Reconnect quickly and forever; the server may restart (it restores rooms from disk).
+  socket = io({ auth: { token }, transports: ['websocket', 'polling'], reconnectionDelay: 500, reconnectionDelayMax: 3000, timeout: 15000 });
+  window.__fd = { msgs: 0, bytes: 0, maxBytes: 0, renders: 0, reconnects: 0 }; // lightweight diagnostics (used by tests)
+  socket.on('server-restart', () => { S.conn = 'restarting'; if (S.view === 'room') render(); });
   socket.on('state', (st) => {
+    const size = JSON.stringify(st).length; window.__fd.msgs++; window.__fd.bytes += size; window.__fd.maxBytes = Math.max(window.__fd.maxBytes, size);
     const prevKey = S.roomKey;
     const m = st.match;
     // Selection belongs to one exact hand state (round + discard step). Anything else clears it, so a
@@ -215,15 +309,50 @@ function connect() {
     if (S.roomKey !== prevKey) S.selected = [];
     const roundKey = m ? `${m.no}:${m.round}` : null;
     if (roundKey !== S.lastRoundKey) { S.lastRoundKey = roundKey; seen.clear(); }
-    S.room = st; S.busy = false;
+    S.room = st; S.busy = false; window.__lastState = st;
+    maybeReveal(st);
     if (S.view === 'room' || S.view === 'lobby') { S.view = 'room'; render(); }
   });
   socket.on('connect', () => { // reconnect: rejoin the room we were in
     const code = S.room?.code ?? sessionStorage.getItem('fd_room');
-    if (code && (S.view === 'room' || S.view === 'lobby')) socket.emit('join', { code, name: S.name }, (r) => { if (r?.error) { S.roomError = r.error; S.room = null; S.view = 'lobby'; render(); } else { S.roomError = null; } });
+    if (S.conn) { window.__fd.reconnects++; S.conn = null; S.roomError = null; }
+    if (code && (S.view === 'room' || S.view === 'lobby')) socket.emit('join', { code, name: S.name }, (r) => { if (r?.error) { S.roomError = r.error; S.room = null; S.view = 'lobby'; render(); } else { S.roomError = null; render(); } });
   });
-  socket.on('disconnect', () => { if (S.view === 'room') { S.roomError = 'Connection lost. Reconnecting…'; render(); } });
+  socket.on('disconnect', () => { S.conn = S.conn ?? 'reconnecting'; S.busy = false; if (S.view === 'room') render(); });
   return socket;
+}
+// End-of-round reveal: your own hand tallies up (like solo) before the round results and league table.
+// Runs once per round per browser; a reconnect or reload doesn't replay it. No socket traffic.
+S.revealKey = sessionStorage.getItem('fd_reveal');
+function maybeReveal(st) {
+  const m = st.match, L = m?.last;
+  if (!L || m.phase === 'playing' || !(m.lastYou >= 0) || !L.results[m.lastYou]) return;
+  const key = `${st.code}:${m.no}:${L.round}`;
+  if (key === S.revealKey) return;
+  S.revealKey = key; sessionStorage.setItem('fd_reveal', key);
+  if (reduced()) return;
+  const r = L.results[m.lastYou];
+  const rv = { key, r, ...buildReveal(r), step: 0 };
+  S.reveal = rv; countShown = 0;
+  const tick = () => {
+    const last = rv.step >= rv.scenes.length - 1;
+    setTimeout(() => {
+      if (S.reveal !== rv) return;
+      if (last) { S.reveal = null; countShown = 0; } else rv.step++;
+      if (S.view === 'room') render();
+      if (!last) tick();
+    }, last ? 1800 : rv.scenes[rv.step].hold);
+  };
+  tick();
+}
+function revealHTML(st) {
+  const rv = S.reveal, m = st.match, r = rv.r;
+  const { scene } = rv.scenes[Math.min(rv.step, rv.scenes.length - 1)];
+  const shown = new Set(rv.order.slice(0, scene.suits));
+  const { cur, line } = revealLine(r, scene, `Your round ${m.last.round} score`);
+  return `<div class="above"><div class="score" style="opacity:${scene.name ? 1 : 0}"><h1>${r.hand}</h1><p class="pts"><span data-to="${scene.points}">${Math.min(countShown, scene.points)}</span> pts</p><p class="line">${line}</p></div></div>
+    <div class="grid">${r.cards.map((c, i) => cardHTML(c, { suit: shown.has(i) ? rv.suitAt[i] : null, hl: cur?.cards.includes(i) })).join('')}</div>
+    <div class="below"><div class="bar"><p class="problem muted">Round ${m.last.round} of ${st.rounds} · results next</p><div class="pilewrap"></div><div class="buttons"><span></span><button class="btn" data-act="skipreveal">Skip to results</button></div></div></div>`;
 }
 function lobbyHTML() {
   return pageHead('Play with friends') + `<div class="form">
@@ -262,7 +391,7 @@ function roomHTML() {
     const s = st.seats[i];
     if (!s) return `<div class="seat empty">Open seat</div>`;
     const status = playing ? (s.status ?? '') : (s.readyUp ? '<span class="rdy">✓ Ready</span>' : '<span class="nrdy">Not ready</span>');
-    return `<div class="seat ${!playing && s.readyUp ? 'is-ready' : ''} ${playing && s.status === 'Finished' ? 'is-ready' : ''}" title="${!playing ? (s.readyUp ? `${esc(s.name)} is ready` : `Waiting for ${esc(s.name)} to ready up`) : esc(s.status ?? '')}"><div class="nm">${esc(s.name)}${s.isYou ? ' (you)' : ''}${s.isHost ? ' ★' : ''}</div><div class="ch">${s.total != null ? `${s.total} pts` : '&nbsp;'}</div><div class="st">${status}${s.connected ? '' : ' <span class="off">· offline</span>'}</div></div>`;
+    return `<div class="seat ${!playing && s.readyUp ? 'is-ready' : ''} ${playing && s.status === 'Finished' ? 'is-ready' : ''}" title="${!playing ? (s.readyUp ? `${esc(s.name)} is ready` : `Waiting for ${esc(s.name)} to ready up`) : esc(s.status ?? '')}"><div class="nm">${esc(s.name)}${s.isYou ? ' (you)' : ''}${s.isHost ? ' ★' : ''}</div><div class="ch">${s.total != null && !S.reveal ? `${s.total} pts` : '&nbsp;'}</div><div class="st">${status}${s.connected ? '' : ' <span class="off">· offline</span>'}</div></div>`;
   }).join('');
   const invite = `${location.origin}/room/${st.code}`;
   let body = `<div class="roomhead"><span>Room</span><span class="code">${st.code}</span><button class="btn small" data-act="copylink" data-link="${esc(invite)}">${S.copied ? 'Link copied' : 'Copy invite link'}</button><button class="btn small" data-act="leave">Leave</button>${m ? `<span class="muted">${m.phase === 'final' ? 'Match finished' : `Round ${m.round} of ${st.rounds}`}</span>` : ''}${S.roomError ? `<span class="err">${esc(S.roomError)}</span>` : ''}</div>
@@ -280,15 +409,17 @@ function roomHTML() {
         <div class="below"><div class="bar"><p class="problem">${sel.length ? `Swap ${sel.length}, keep ${5 - sel.length}` : `Round ${m.round} of ${st.rounds}`}</p>${timer}<div class="pilewrap">${pileHTML(you.deckLeft)}</div><div class="buttons"><button class="btn" data-act="mpstand" ${S.busy ? 'disabled' : ''}>Stand</button><button class="btn primary" data-act="mpdiscard" ${sel.length && !S.busy ? '' : 'disabled'}>${sel.length ? `Discard ${sel.length}` : 'Select cards'}</button></div></div></div>`;
     } else {
       const r = you.result;
-      body += `<div class="above"><div class="score"><h1>${r.hand}</h1><p class="pts"><span>${r.points}</span> pts</p><p class="line">Waiting for: ${m.waitingFor.map(esc).join(', ')}</p></div></div>
+      body += `<div class="above"><div class="score"><h1>Hand locked in</h1><p class="line">Your score is revealed when the round ends · waiting for: ${m.waitingFor.map(esc).join(', ')}</p></div></div>
         <div class="grid">${you.hand.map((c, i) => cardHTML(c, { badge: you.lastNew.includes(i) ? 'New' : null })).join('')}</div>
         <div class="below"><div class="bar"><p class="problem muted">Round ends when everyone has finished.</p>${timer}<div class="pilewrap">${pileHTML(you.deckLeft)}</div><div class="buttons"></div></div></div>`;
       after = matchTable(r, you.hand);
     }
+  } else if (S.reveal && m?.last && S.reveal.key === `${st.code}:${m.no}:${m.last.round}`) {
+    body += revealHTML(st);
   } else {
     const { panel, rc, waitText } = readyPanelHTML(st);
     let head = '';
-    if (m?.phase === 'final') head = `<div class="score"><h1>🏆 ${esc(m.champion)} is the champion</h1><p class="pts"><span>${m.championPts ?? m.table[0]?.total ?? 0}</span> pts</p><p class="line">Final table after ${m.round} rounds${m.championWhy ? ` · ${esc(m.championWhy)}` : ''}</p></div>`;
+    if (m?.phase === 'final') head = `<div class="score"><h1>🏆 ${esc(m.champion)} is the champion</h1><p class="pts"><span>${m.championPts ?? m.table[0]?.total ?? 0}</span> pts</p><p class="line">Final table after ${m.round} rounds${m.championWhy ? ` · ${esc(m.championWhy)}` : ''}</p><p class="line finallinks">${resultsLink(st.code, m.no, 'Permanent link to this table')} · <a href="/stats" data-act="mpage" data-page="mpstats">Your stats</a> · <a href="/trophies" data-act="mpage" data-page="trophies">Trophy room</a></p></div>`;
     else if (m?.last) head = `<div class="score"><h1>Round ${m.last.round} of ${st.rounds}</h1><p class="line">${esc(m.last.winner)} wins the round with ${m.last.results[0]?.points ?? 0} pts</p></div>`;
     body += `<div class="above">${head}${m ? leagueTableHTML(m, { final: m.phase === 'final' }) : ''}${panel}</div>
       <div class="below"><div class="bar"><p class="problem muted" title="${esc(waitText)}">${rc.ready}/${rc.total} ready${rc.waitingFor.length && !rc.allReady ? ` · waiting for ${rc.waitingFor.map(esc).join(', ')}` : ''}</p><div class="pilewrap"></div><div class="buttons"><span></span><button class="btn ${meSeat?.readyUp ? '' : 'primary'}" data-act="ready" data-ready="${meSeat?.readyUp ? 0 : 1}" aria-pressed="${!!meSeat?.readyUp}">${meSeat?.readyUp ? '✓ Ready (click to cancel)' : `Ready · ${esc(rc.next)}`}</button></div></div></div>`;
@@ -329,6 +460,8 @@ $root.addEventListener('click', async (e) => {
     case 'help': S.modal = { type: 'help' }; return render();
     case 'close': S.modal = null; return render();
     case 'page': S.view = el.dataset.page; return render();
+    case 'mpage': e.preventDefault(); if (S.view === 'room' && S.room?.match?.phase !== 'final') return; return goPage(el.dataset.page, el.dataset.page === 'trophies' ? '/trophies' : '/stats');
+    case 'results': e.preventDefault(); S.view = 'results'; S.menu = false; history.pushState(null, '', `/results/${el.dataset.code}/${el.dataset.no}`); return loadResults(el.dataset.code, el.dataset.no);
     case 'mode': S.modal = null; return el.dataset.mode === 'friends' ? (S.view === 'room' ? render() : goLobby()) : startSolo(el.dataset.mode);
     case 'toggle': {
       const i = +el.dataset.i; const arr = S.view === 'solo' ? S.solo.selected : S.selected;
@@ -351,6 +484,7 @@ $root.addEventListener('click', async (e) => {
     case 'leave': await emit('leave'); S.room = null; sessionStorage.removeItem('fd_room'); history.pushState(null, '', '/'); S.view = 'lobby'; return render();
     case 'copylink': await navigator.clipboard?.writeText(el.dataset.link).catch(() => {}); S.copied = true; render(); setTimeout(() => { S.copied = false; render(); }, 1500); return;
     case 'ready': return emit('ready', { ready: el.dataset.ready === '1' });
+    case 'skipreveal': S.reveal = null; countShown = 0; render(); return;
     case 'mpstand': if (S.busy) return; S.busy = true; render(); return emit('stand').then(() => { S.busy = false; render(); });
     case 'mpdiscard': {
       // Send the exact hand we are looking at and the discard step, so the server rejects stale/double submits.
@@ -368,7 +502,13 @@ setInterval(() => {
   document.querySelectorAll('[data-deadline]').forEach((el) => { el.style.width = `${Math.max(0, Math.min(100, (+el.dataset.deadline - Date.now()) / (S.room?.roundMs ?? 120000) * 100))}%`; });
   document.querySelectorAll('[data-next]').forEach((el) => { el.textContent = `${el.dataset.label ?? 'Next hand in'} ${Math.max(0, Math.ceil((+el.dataset.next - Date.now()) / 1000))}s`; });
 }, 1000);
-addEventListener('popstate', () => { if (!location.pathname.startsWith('/room/')) { S.view = 'home'; render(); } });
+addEventListener('popstate', () => {
+  const p = location.pathname;
+  if (p.startsWith('/room/')) return;
+  if (p === '/stats' || p === '/trophies') { S.view = p === '/stats' ? 'mpstats' : 'trophies'; return loadMpStats(); }
+  const r = p.match(/^\/results\/([A-Za-z0-9]{5})\/(\d+)/); if (r) { S.view = 'results'; return loadResults(r[1].toUpperCase(), r[2]); }
+  S.view = 'home'; render();
+});
 
 // ---------- Boot ----------
 const m = location.pathname.match(/^\/room\/([A-Za-z0-9]{5})/);
@@ -378,5 +518,7 @@ if (m) {
   connect();
   if (S.name) { S.view = 'room'; render(); socket?.emit('join', { code, name: S.name }, (r) => { if (r?.error) { S.roomError = r.error; S.view = 'lobby'; S.joinCode = code; render(); } else sessionStorage.setItem('fd_room', r.code); }); }
   else goLobby(code);
-} else if (qp === 'daily' || qp === 'random') startSolo(qp);
+} else if (location.pathname === '/stats' || location.pathname === '/trophies') { S.view = location.pathname === '/stats' ? 'mpstats' : 'trophies'; loadMpStats(); }
+else if (/^\/results\/[A-Za-z0-9]{5}\/\d+/.test(location.pathname)) { const [, , c, n] = location.pathname.split('/'); S.view = 'results'; loadResults(c.toUpperCase(), n); }
+else if (qp === 'daily' || qp === 'random') startSolo(qp);
 else render();

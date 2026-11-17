@@ -3,6 +3,7 @@ import express from 'express';
 import { createServer } from 'node:http';
 import { Server } from 'socket.io';
 import { readFileSync } from 'node:fs';
+import { openDb } from './db.js';
 import { randomInt } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -48,10 +49,24 @@ app.get('/api/sportsdb/:kind', async (req, res) => {
     res.json(out);
   } catch { res.json(null); }
 });
+// Saved results and per-player stats (from SQLite). Your browser token identifies you; it is sent in a header,
+// never in a URL, and never returned.
+const okToken = (t) => /^[a-f0-9]{16,64}$/.test(t ?? '');
+app.get('/api/match/:code/:no', (req, res) => {
+  const r = store.matchResults(String(req.params.code).toUpperCase().slice(0, 5), +req.params.no || 0);
+  r ? res.json(r) : res.status(404).json({ error: 'Match not found' });
+});
+app.get('/api/stats', (req, res) => {
+  const t = req.get('x-fd-token');
+  if (!okToken(t)) return res.status(400).json({ error: 'missing token' });
+  res.json(store.playerStats(t, (id) => CARD.get(id)?.title ?? id));
+});
+for (const route of ['/results/:code/:no', '/stats', '/trophies']) app.get(route, (_, res) => res.sendFile(path.join(__dirname, 'public/index.html')));
 app.get('/room/:code', (_, res) => res.sendFile(path.join(__dirname, 'public/index.html')));
 
 const http = createServer(app);
-const io = new Server(http, { cors: { origin: true } });
+// Short heartbeats so a dead connection is noticed in ~15s instead of ~45s (Socket.IO defaults 25s + 20s).
+const io = new Server(http, { cors: { origin: true }, pingInterval: 8000, pingTimeout: 7000, transports: ['websocket', 'polling'] });
 
 // ---------- Rooms ----------
 const rooms = new Map();
@@ -80,6 +95,9 @@ function standings(m) {
     .sort((a, b) => b.total - a.total || b.roundsWon - a.roundsWon || b.best - a.best || a.finishMs - b.finishMs || a.seat - b.seat)
     .map((r, i) => ({ pos: i + 1, name: r.name, total: r.total, roundScore: r.rounds.at(-1) ?? 0, rounds: r.rounds, roundsWon: r.roundsWon, best: r.best, finishMs: r.finishMs, left: !!r.left }));
 }
+// Same order as standings(), as tokens (server-side only; tokens are never sent to clients).
+const rankedTokens = (m) => m.participants.map((t, seat) => ({ t, seat, ...m.table[t] }))
+  .sort((a, b) => b.total - a.total || b.roundsWon - a.roundsWon || b.best - a.best || a.finishMs - b.finishMs || a.seat - b.seat).map((r) => r.t);
 // Why the leader is ahead of the runner-up when totals are level.
 function tieReason(m) {
   const [a, b] = standings(m);
@@ -132,7 +150,7 @@ function startMatch(room) {
   const players = room.seats.filter((s) => !s.leaving);
   room.matchNo++;
   room.match = {
-    phase: 'roundEnd', round: 0, participants: players.map((s) => s.token), usedCards: new Set(), last: null, cur: null,
+    phase: 'roundEnd', round: 0, startedAt: Date.now(), participants: players.map((s) => s.token), usedCards: new Set(), last: null, cur: null,
     table: Object.fromEntries(players.map((s) => [s.token, { name: s.name, total: 0, rounds: [], roundsWon: 0, best: 0, finishMs: 0, left: false }])),
   };
   say(room, `Match ${room.matchNo} begins: ${players.map((s) => s.name).join(', ')} · ${ROUNDS} rounds.`);
@@ -156,10 +174,7 @@ function startRound(room) {
     m.cur.players[t] = { order, hand: order.slice(0, 5), pos: 5, keeps: [], stages: [order.slice(0, 5)], done: false, finishMs: null, result: null, lastNew: [] };
   }
   for (const s of room.seats) s.ready = false;
-  clearTimeout(room.roundTimer);
-  room.roundTimer = setTimeout(() => {
-    for (const t of Object.keys(m.cur.players)) if (!m.cur.players[t].done) finishPlayer(room, t, 'timed out');
-  }, ROUND_MS);
+  armRoundTimer(room);
   say(room, `Round ${m.round} of ${ROUNDS}: dealt.`);
   broadcast(room);
 }
@@ -213,16 +228,20 @@ function endRound(room) {
     round: m.round, deckSize: m.cur.deck.length, winner: win ? m.table[win[0]].name : null,
     results: m.participants.filter((t) => m.cur.players[t]).map((t) => {
       const p = m.cur.players[t];
-      return { name: m.table[t].name, points: p.result.points, hand: p.result.hand, matches: p.result.matches,
+      return { t, name: m.table[t].name, points: p.result.points, hand: p.result.hand, matches: p.result.matches,
         cards: p.hand.map(publicCard), newIdx: p.lastNew, discards: p.keeps.map((k) => 5 - k.length), finishMs: p.finishMs };
     }).sort((a, b) => b.points - a.points || a.finishMs - b.finishMs),
   };
+  // Keep player tokens server-side only: remember the order, then strip them from what's broadcast.
+  m.lastTokens = m.last.results.map((r) => r.t);
+  for (const r of m.last.results) delete r.t;
   say(room, `Round ${m.round}: ${m.last.winner} wins the round with ${m.last.results[0]?.points ?? 0} pts.`);
   for (const s of room.seats) s.ready = false;
   if (m.round >= ROUNDS || playingNow(m).length < 2) {
     m.phase = 'final';
     const table = standings(m);
     const champ = table.find((r) => !r.left) ?? table[0]; // players who left forfeit the title
+    m.championToken = rankedTokens(m).find((t) => !m.table[t].left) ?? rankedTokens(m)[0];
     m.champion = champ?.name; m.championPts = champ?.total; m.championWhy = champ === table[0] ? (tieReason(m) ?? (m.round < ROUNDS ? 'everyone else left' : null)) : 'players above left the match';
     say(room, `🏆 ${m.champion} is the champion with ${m.championPts} pts${m.championWhy ? ` (${m.championWhy})` : ''}! Ready up for a new match.`);
   } else {
@@ -232,8 +251,19 @@ function endRound(room) {
   broadcast(room);
 }
 
+function armRoundTimer(room) {
+  const m = room.match;
+  clearTimeout(room.roundTimer);
+  room.roundTimer = setTimeout(() => {
+    if (room.match !== m || m.phase !== 'playing') return;
+    for (const t of Object.keys(m.cur.players)) if (!m.cur.players[t].done) finishPlayer(room, t, 'timed out');
+  }, Math.max(0, m.cur.deadline - Date.now()));
+}
+
 // ---------- Views ----------
 function broadcast(room) {
+  room.lastActive = Date.now();
+  save(room); // every state change is written to SQLite before anyone sees it
   for (const s of room.seats) if (s.socketId) io.to(s.socketId).emit('state', viewFor(room, s.token));
 }
 function viewFor(room, token) {
@@ -253,7 +283,7 @@ function viewFor(room, token) {
     }),
     match: m && {
       no: room.matchNo, phase: m.phase, round: m.round, champion: m.champion ?? null, championPts: m.championPts ?? null, championWhy: m.championWhy ?? null,
-      deadline: cur?.deadline ?? null, table: standings(m), last: m.last, youPlay: m.participants.includes(token),
+      deadline: cur?.deadline ?? null, table: standings(m), last: m.last, lastYou: m.lastTokens ? m.lastTokens.indexOf(token) : -1, youPlay: m.participants.includes(token),
       waitingFor: cur ? Object.keys(cur.players).filter((t) => !cur.players[t].done && !m.table[t].left).map((t) => m.table[t].name) : [],
       you: mine && { hand: mine.hand.map(publicCard), step: mine.keeps.length, discardsLeft: 2 - mine.keeps.length, deckLeft: DECK_SIZE - mine.pos, done: mine.done, result: mine.done ? mine.result : null, lastNew: mine.lastNew },
     },
@@ -308,9 +338,10 @@ io.on('connection', (socket) => {
       if (m.phase === 'playing' && playingNow(m).length < 2) for (const t of Object.keys(m.cur.players)) if (!m.cur.players[t].done) finishPlayer(r, t, 'is the last player');
     }
     if (!r.seats.some((x) => x.token === r.host) && r.seats[0]) r.host = r.seats[0].token;
-    if (r.seats.length === 0) { clearTimer(r); clearTimeout(r.roundTimer); rooms.delete(r.code); return; }
+    if (r.seats.length === 0) { clearTimer(r); clearTimeout(r.roundTimer); rooms.delete(r.code); forget(r.code); return; }
     if (m && m.phase !== 'playing' && m.phase !== 'final' && playingNow(m).length < 2) {
       m.phase = 'final'; const t = standings(m); const c = t.find((x) => !x.left) ?? t[0]; m.champion = c?.name; m.championPts = c?.total; m.championWhy = 'everyone else left';
+      m.championToken = rankedTokens(m).find((x) => !m.table[x].left) ?? rankedTokens(m)[0];
       say(r, `Match ended early: ${m.champion} wins.`);
     }
     checkReady(r);
@@ -343,7 +374,46 @@ io.on('connection', (socket) => {
 
 // Clean up abandoned rooms.
 setInterval(() => {
-  for (const [code, r] of rooms) if (r.seats.every((s) => !s.socketId) && Date.now() - r.created > 30 * 60e3 && r.match?.phase !== 'playing') { clearTimer(r); clearTimeout(r.roundTimer); rooms.delete(code); }
+  for (const [code, r] of rooms) if (r.seats.every((s) => !s.socketId) && Date.now() - Math.max(r.created, r.restoredAt ?? 0, r.lastActive ?? 0) > 30 * 60e3) { clearTimer(r); clearTimeout(r.roundTimer); rooms.delete(code); forget(code); }
 }, 60e3);
+
+// ---------- Persistence (SQLite) ----------
+// The host can stop/restart the machine at any time (Fly trial machines are stopped every 5 minutes; deploys do the
+// same). Rooms used to live only in memory, so every restart wiped all matches and kicked everyone out. Now every
+// state change is written to SQLite on the Fly volume (/data) — rooms, players, matches, each round's deck and every
+// player's hand/draw state, and league totals — and all active matches are rebuilt on boot. Clients reconnect and
+// rejoin their seat and current round automatically. Finished matches stay in the DB for stats and the trophy room.
+const DATA_DIR = process.env.DATA_DIR ?? path.join(__dirname, 'data');
+const store = openDb(DATA_DIR);
+function save(room) { try { store.saveRoom(room); } catch (e) { console.error('save failed', room.code, e.message); } }
+function forget(code) { try { store.forgetRoom(code); } catch (e) { console.error('forget failed', e.message); } }
+function restore() {
+  try {
+    const now = Date.now();
+    for (const room of store.loadRooms(24 * 3600e3)) {
+      Object.assign(room, { timer: null, roundTimer: null, nextAt: null, restoredAt: now });
+      rooms.set(room.code, room);
+      const m = room.match;
+      if (m?.phase === 'playing' && m.cur) {
+        say(room, 'Server restarted: your match was restored. Reconnecting players…');
+        // Give everyone back the time lost while the server was down (at least 45s left).
+        m.cur.deadline = Math.max(m.cur.deadline, now + 45000);
+        armRoundTimer(room);
+      } else if (m && m.phase !== 'final') say(room, 'Server restarted: your match was restored.');
+      checkReady(room);
+    }
+    console.log(`Restored ${rooms.size} room(s) from SQLite in ${DATA_DIR}`);
+  } catch (e) { console.error('restore failed', e); }
+}
+let shuttingDown = false;
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => {
+  if (shuttingDown) return; shuttingDown = true;
+  for (const r of rooms.values()) save(r);
+  // Tell clients right away so they show "reconnecting" instead of hanging until the heartbeat times out.
+  io.emit('server-restart');
+  setTimeout(() => { try { store.db.close(); } catch {} process.exit(0); }, 300);
+});
+process.on('uncaughtException', (e) => { console.error('uncaught', e); for (const r of rooms.values()) save(r); });
+restore();
 
 http.listen(PORT, () => console.log(`FootDraw on http://localhost:${PORT}  (${POOL.length} cards, ${Object.keys(META.traits).length} traits)`));
