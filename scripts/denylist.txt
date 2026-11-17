@@ -1,0 +1,9 @@
+# Manual removals from the card pool. One Wikipedia title or Wikidata QID per line; '#' starts a comment.
+# People whose fame is outside football (only youth / brief / amateur football careers on Wikidata).
+Julio Iglesias        # Spanish singer, Real Madrid youth goalkeeper
+Jason Statham         # actor
+Jo Nesbø              # novelist / musician
+Albert Camus          # philosopher, amateur goalkeeper
+Terry Crews           # actor
+Javier Milei          # politician, youth goalkeeper
+Pope Francis          # (safety net)

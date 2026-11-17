@@ -9,6 +9,3 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "22"
-# For chip balances that survive redeploys, use a paid plan and add:
-#    disk: { name: footdraw-data, mountPath: /data, sizeGB: 1 }
-#    and env DATA_DIR=/data

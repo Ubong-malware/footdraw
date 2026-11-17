@@ -1,42 +1,27 @@
-// FootDraw server: serves the static site and runs multiplayer poker rooms over Socket.IO.
+// FootDraw server: serves the static site and runs multiplayer 10-round FootDraw matches over Socket.IO.
 import express from 'express';
 import { createServer } from 'node:http';
 import { Server } from 'socket.io';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
-import { randomBytes, randomInt } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { randomInt } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { scoreHand, compareResults, makeDeck, shuffle, BONUS } from './public/shared/game.js';
+import { scoreHand, makeDeck, shuffle, BONUS } from './public/shared/game.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = +(process.env.PORT ?? 8080);
-const START_CHIPS = +(process.env.START_CHIPS ?? 1000);
-const ANTE = +(process.env.ANTE ?? 10);
 const MAX_PLAYERS = 4;
-const TURN_MS = +(process.env.TURN_MS ?? 45000);
-// Once every seated player is ready, a short countdown runs before the deal (cancelled if anyone un-readies).
+const ROUNDS = +(process.env.ROUNDS ?? 10);
+const DECK_SIZE = 15;
+const ROUND_MS = +(process.env.ROUND_MS ?? 120000);           // per-round timer; unfinished players auto-stand
+// Once every required player is ready, a short countdown runs (cancelled if anyone un-readies or joins).
 const READY_COUNTDOWN_MS = +(process.env.READY_COUNTDOWN_MS ?? 3000);
-const DATA_DIR = process.env.DATA_DIR ?? path.join(__dirname, 'data');
-const BALANCES = path.join(DATA_DIR, 'balances.json');
 
 const poolData = JSON.parse(readFileSync(path.join(__dirname, 'public/data/pool.json'), 'utf8'));
 const POOL = poolData.cards;
 const META = { traits: poolData.traits, size: POOL.length };
 const CARD = new Map(POOL.map((c) => [c.id, c]));
-
-// ---------- Persistent balances (per browser token) ----------
-mkdirSync(DATA_DIR, { recursive: true });
-const balances = existsSync(BALANCES) ? JSON.parse(readFileSync(BALANCES, 'utf8')) : {};
-let saveTimer = null;
-const saveBalances = () => {
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => writeFileSync(BALANCES, JSON.stringify(balances)), 200);
-};
-const account = (token, name) => {
-  balances[token] ??= { chips: START_CHIPS, name: name ?? 'Player', hands: 0, won: 0 };
-  if (name) balances[token].name = name;
-  return balances[token];
-};
+const crand = () => randomInt(2 ** 32) / 2 ** 32;
 
 // ---------- App ----------
 const app = express();
@@ -74,66 +59,57 @@ const newCode = () => { let c; do { c = Array.from({ length: 5 }, () => 'ABCDEFG
 const publicCard = (id) => { const c = CARD.get(id); return { id, title: c.title, description: c.description, thumbnail: c.thumbnail, extract: c.extract, kind: c.kind }; };
 
 function createRoom(hostToken) {
-  const room = { code: newCode(), host: hostToken, seats: [], game: null, log: [], handNo: 0, dealer: -1, timer: null, nextAt: null, lastResult: null, created: Date.now() };
+  const room = { code: newCode(), host: hostToken, seats: [], match: null, matchNo: 0, log: [], timer: null, roundTimer: null, nextAt: null, created: Date.now() };
   rooms.set(room.code, room);
   return room;
 }
 const seatOf = (room, token) => room.seats.find((s) => s.token === token);
 const say = (room, msg) => { room.log.push({ t: Date.now(), msg }); if (room.log.length > 60) room.log.shift(); };
+const clearTimer = (room) => { clearTimeout(room.timer); room.timer = null; };
 
-function broadcast(room) {
-  for (const s of room.seats) if (s.socketId) io.to(s.socketId).emit('state', viewFor(room, s.token));
+// ---------- Match model ----------
+// match = { phase: 'playing' | 'roundEnd' | 'final', round, participants: [token], usedCards: Set,
+//           table: { token: { name, total, rounds: [score], roundsWon, best, finishMs, left } },
+//           cur: { deck, startedAt, deadline, players: { token: { order, hand, pos, keeps, stages, done, finishMs, result } } },
+//           last: <results of the last finished round> }
+const playingNow = (m) => m.participants.filter((t) => !m.table[t].left);
+
+// Table order: total points ↓, rounds won ↓, best single round ↓, total finishing time ↑ (earliest), then seat.
+function standings(m) {
+  return m.participants.map((t, seat) => ({ t, seat, ...m.table[t] }))
+    .sort((a, b) => b.total - a.total || b.roundsWon - a.roundsWon || b.best - a.best || a.finishMs - b.finishMs || a.seat - b.seat)
+    .map((r, i) => ({ pos: i + 1, name: r.name, total: r.total, roundScore: r.rounds.at(-1) ?? 0, rounds: r.rounds, roundsWon: r.roundsWon, best: r.best, finishMs: r.finishMs, left: !!r.left }));
 }
-
-function viewFor(room, token) {
-  const g = room.game;
-  const me = seatOf(room, token);
-  return {
-    code: room.code, host: room.host === token, handNo: room.handNo, ante: ANTE,
-    nextAt: room.nextAt, turnMs: TURN_MS, readyCheck: room.game ? null : readyInfo(room),
-    seats: room.seats.map((s, i) => {
-      const p = g?.players[s.token];
-      return {
-        seat: i, name: s.name, chips: s.chips, connected: !!s.socketId, isYou: s.token === token,
-        isHost: s.token === room.host, dealer: g ? g.dealerToken === s.token : false,
-        inHand: !!p, folded: p?.folded ?? false, allIn: p?.allIn ?? false, bet: p?.bet ?? 0,
-        drawn: p ? p.draws.map((d) => d.length) : [], ready: g?.phase.startsWith('draw') ? !!p?.drawDone : null,
-        cardsCount: p?.hand.length ?? 0, sittingOut: s.sittingOut,
-        readyUp: !!s.ready, broke: s.chips < ANTE,
-      };
-    }),
-    game: g && {
-      phase: g.phase, street: g.street, pot: g.pot, currentBet: g.currentBet, minRaise: g.minRaise,
-      turnSeat: g.turn ? room.seats.findIndex((s) => s.token === g.turn) : null, yourTurn: g.turn === token, deadline: g.deadline, deckLeft: g.deck.length - g.deckPos,
-      you: me && g.players[token] && {
-        hand: g.players[token].hand.map(publicCard), folded: g.players[token].folded,
-        toCall: Math.max(0, g.currentBet - g.players[token].bet), drawsLeft: 2 - g.players[token].draws.length,
-        drawDone: !!g.players[token].drawDone,
-      },
-    },
-    result: room.lastResult,
-    log: room.log.slice(-25),
-  };
+// Why the leader is ahead of the runner-up when totals are level.
+function tieReason(m) {
+  const [a, b] = standings(m);
+  if (!a || !b || a.total !== b.total) return null;
+  if (a.roundsWon !== b.roundsWon) return `level on points, decided by rounds won (${a.roundsWon} vs ${b.roundsWon})`;
+  if (a.best !== b.best) return `level on points, decided by best single round (${a.best} vs ${b.best} pts)`;
+  if (a.finishMs !== b.finishMs) return `level on points, decided by faster total finishing time (${(a.finishMs / 1000).toFixed(1)}s vs ${(b.finishMs / 1000).toFixed(1)}s)`;
+  return 'level on points, decided by seat order';
 }
-
-function clearTimer(room) { clearTimeout(room.timer); room.timer = null; }
 
 // ---------- Ready-up ----------
-// Players who can be dealt in: seated, not leaving, with at least the ante.
-const playable = (room) => room.seats.filter((s) => !s.leaving && s.chips >= ANTE);
+// Who must be ready: everyone seated (min 2) before a match; only match participants still present between rounds.
+function required(room) {
+  const m = room.match;
+  if (m && m.phase === 'roundEnd') return room.seats.filter((s) => !s.leaving && m.participants.includes(s.token));
+  return room.seats.filter((s) => !s.leaving);
+}
 function readyInfo(room) {
-  const need = playable(room);
+  const need = required(room);
   const ready = need.filter((s) => s.ready);
+  const m = room.match;
   return {
     ready: ready.length, total: need.length, min: 2,
     waitingFor: need.filter((s) => !s.ready).map((s) => s.name),
-    broke: room.seats.filter((s) => !s.leaving && s.chips < ANTE).map((s) => s.name),
     allReady: need.length >= 2 && ready.length === need.length,
+    next: m?.phase === 'roundEnd' ? `Round ${m.round + 1} of ${ROUNDS}` : m?.phase === 'final' ? 'New match' : 'Start match',
   };
 }
-// Re-evaluate after any ready toggle, join, leave or rebuy: deal only when ALL playable seats (min 2) are ready.
 function checkReady(room) {
-  if (room.game) return;
+  if (room.match?.phase === 'playing') return;
   const info = readyInfo(room);
   if (info.allReady) {
     if (!room.nextAt) {
@@ -141,194 +117,148 @@ function checkReady(room) {
       clearTimer(room);
       room.timer = setTimeout(() => {
         room.timer = null; room.nextAt = null;
-        if (readyInfo(room).allReady) startHand(room); else broadcast(room);
+        if (!readyInfo(room).allReady) return broadcast(room);
+        if (room.match?.phase === 'roundEnd') startRound(room); else startMatch(room);
       }, READY_COUNTDOWN_MS);
-      say(room, `Everyone is ready. Dealing in ${Math.round(READY_COUNTDOWN_MS / 1000)}s…`);
+      say(room, `Everyone is ready. ${info.next} in ${Math.round(READY_COUNTDOWN_MS / 1000)}s…`);
     }
   } else if (room.nextAt) {
     clearTimer(room); room.nextAt = null;
-    say(room, 'Deal cancelled: waiting for everyone to be ready.');
+    say(room, 'Countdown cancelled: waiting for everyone to be ready.');
   }
 }
 
-function startHand(room) {
+function startMatch(room) {
+  const players = room.seats.filter((s) => !s.leaving);
+  room.matchNo++;
+  room.match = {
+    phase: 'roundEnd', round: 0, participants: players.map((s) => s.token), usedCards: new Set(), last: null, cur: null,
+    table: Object.fromEntries(players.map((s) => [s.token, { name: s.name, total: 0, rounds: [], roundsWon: 0, best: 0, finishMs: 0, left: false }])),
+  };
+  say(room, `Match ${room.matchNo} begins: ${players.map((s) => s.name).join(', ')} · ${ROUNDS} rounds.`);
+  startRound(room);
+}
+
+function startRound(room) {
+  const m = room.match;
   clearTimer(room); room.nextAt = null;
-  const eligible = room.seats.filter((s) => s.chips >= ANTE && !s.sittingOut && !s.leaving && s.ready);
-  if (eligible.length < 2) { room.game = null; say(room, 'Need at least 2 players with chips to deal.'); broadcast(room); return; }
-  room.handNo++;
-  room.lastResult = null;
-  // Rotate the dealer button among eligible seats.
-  const order = room.seats.filter((s) => eligible.includes(s));
-  const prevIdx = order.findIndex((s) => s.token === room.dealerToken);
-  const dealer = order[(prevIdx + 1) % order.length];
-  room.dealerToken = dealer.token;
-  const seq = [...order.slice(order.indexOf(dealer) + 1), ...order.slice(0, order.indexOf(dealer) + 1)];
-  const deck = makeDeck(POOL, META, 16 + 10 * seq.length, () => randomInt(2 ** 32) / 2 ** 32).map((c) => c.id);
-  const g = { phase: 'bet', street: 1, deck, deckPos: 0, pot: 0, currentBet: 0, minRaise: ANTE * 2, order: seq.map((s) => s.token), dealerToken: dealer.token, players: {}, turn: null, deadline: null };
-  room.game = g;
-  for (const s of seq) {
-    const ante = Math.min(ANTE, s.chips);
-    s.chips -= ante; g.pot += ante;
-    g.players[s.token] = { hand: deck.slice(g.deckPos, g.deckPos + 5), folded: false, allIn: s.chips === 0, bet: 0, contributed: ante, acted: false, draws: [], drawDone: false, stages: [] };
-    g.deckPos += 5;
-    g.players[s.token].stages.push(g.players[s.token].hand.slice());
+  m.round++;
+  m.phase = 'playing';
+  // A fresh 15-card deck every round (no card repeats within a match). Everyone gets the same deck, each in
+  // their own independent shuffle (like the Daily deck).
+  const fresh = POOL.filter((c) => !m.usedCards.has(c.id));
+  const deck = makeDeck(fresh.length >= 60 ? fresh : POOL, META, DECK_SIZE, crand).map((c) => c.id);
+  deck.forEach((id) => m.usedCards.add(id));
+  const now = Date.now();
+  m.cur = { deck, startedAt: now, deadline: now + ROUND_MS, players: {} };
+  for (const t of playingNow(m)) {
+    const order = shuffle(deck, crand);
+    m.cur.players[t] = { order, hand: order.slice(0, 5), pos: 5, keeps: [], stages: [order.slice(0, 5)], done: false, finishMs: null, result: null, lastNew: [] };
   }
-  say(room, `Hand #${room.handNo}: ${dealer.name} deals. Everyone antes ${ANTE}.`);
-  startBetting(room);
-}
-
-const live = (g) => g.order.filter((t) => !g.players[t].folded);
-const canAct = (g) => live(g).filter((t) => !g.players[t].allIn);
-
-function startBetting(room) {
-  const g = room.game;
-  g.phase = 'bet'; g.currentBet = 0; g.minRaise = ANTE * 2;
-  for (const t of g.order) { g.players[t].bet = 0; g.players[t].acted = false; }
-  if (canAct(g).length < 2) return advance(room); // nothing to bet on
-  g.turn = canAct(g)[0];
-  armTurn(room);
+  for (const s of room.seats) s.ready = false;
+  clearTimeout(room.roundTimer);
+  room.roundTimer = setTimeout(() => {
+    for (const t of Object.keys(m.cur.players)) if (!m.cur.players[t].done) finishPlayer(room, t, 'timed out');
+  }, ROUND_MS);
+  say(room, `Round ${m.round} of ${ROUNDS}: dealt.`);
   broadcast(room);
 }
 
-function armTurn(room) {
-  const g = room.game; clearTimer(room);
-  g.deadline = Date.now() + TURN_MS;
-  room.timer = setTimeout(() => {
-    if (g.phase === 'bet') {
-      const p = g.players[g.turn];
-      act(room, g.turn, p.bet >= g.currentBet ? { type: 'check' } : { type: 'fold' }, true);
-    } else if (g.phase === 'draw') {
-      for (const t of live(g)) if (!g.players[t].drawDone) doDraw(room, t, [], true);
-    }
-  }, TURN_MS);
-}
-
-function act(room, token, action, auto = false) {
-  const g = room.game;
-  if (!g || g.phase !== 'bet' || g.turn !== token) return 'Not your turn';
-  const p = g.players[token]; const seat = seatOf(room, token);
-  const toCall = g.currentBet - p.bet;
-  const put = (n) => { n = Math.min(n, seat.chips); seat.chips -= n; p.bet += n; p.contributed += n; g.pot += n; if (seat.chips === 0) p.allIn = true; return n; };
-  switch (action.type) {
-    case 'fold': p.folded = true; say(room, `${seat.name} folds${auto ? ' (timed out)' : ''}.`); break;
-    case 'check': if (toCall > 0) return 'You must call, raise or fold'; say(room, `${seat.name} checks${auto ? ' (timed out)' : ''}.`); break;
-    case 'call': if (toCall <= 0) return 'Nothing to call'; put(toCall); say(room, `${seat.name} calls ${Math.min(toCall, p.bet)}${p.allIn ? ' (all in)' : ''}.`); break;
-    case 'raise': {
-      // amount = total bet this round the player wants to reach
-      const target = Math.floor(Number(action.amount));
-      const max = p.bet + seat.chips;
-      if (!Number.isFinite(target)) return 'Bad amount';
-      const allIn = target >= max;
-      if (!allIn && target < g.currentBet + g.minRaise) return `Minimum raise is to ${g.currentBet + g.minRaise}`;
-      const reach = Math.min(target, max);
-      put(reach - p.bet);
-      if (p.bet > g.currentBet) {
-        const raiseBy = p.bet - g.currentBet;
-        if (raiseBy >= g.minRaise) g.minRaise = raiseBy;
-        g.currentBet = p.bet;
-        for (const t of g.order) if (t !== token) g.players[t].acted = false;
-      }
-      say(room, `${seat.name} ${g.currentBet === p.bet && toCall === 0 && p.bet === reach ? 'bets' : 'raises to'} ${p.bet}${p.allIn ? ' (all in)' : ''}.`);
-      break;
-    }
-    default: return 'Unknown action';
-  }
-  p.acted = true;
-  if (live(g).length === 1) return endHand(room);
-  const pending = canAct(g).filter((t) => !g.players[t].acted || g.players[t].bet < g.currentBet);
-  if (pending.length === 0 || (canAct(g).length <= 1 && canAct(g).every((t) => g.players[t].bet >= g.currentBet))) return advance(room);
-  // next player after current in order who still needs to act
-  const idx = g.order.indexOf(token);
-  for (let i = 1; i <= g.order.length; i++) {
-    const t = g.order[(idx + i) % g.order.length];
-    if (pending.includes(t)) { g.turn = t; break; }
-  }
-  armTurn(room); broadcast(room);
-}
-
-function advance(room) {
-  const g = room.game;
-  if (g.phase === 'bet' && g.street < 3) {
-    g.phase = 'draw'; g.turn = null;
-    for (const t of live(g)) g.players[t].drawDone = false;
-    say(room, `Draw ${g.street} of 2: pick cards to discard, or stand pat.`);
-    armTurn(room); broadcast(room); return;
-  }
-  if (g.phase === 'draw') { g.street++; return startBetting(room); }
-  return endHand(room);
-}
-
-function doDraw(room, token, discards, auto = false) {
-  const g = room.game;
-  if (!g || g.phase !== 'draw') return 'Not the draw phase';
-  const p = g.players[token];
-  if (!p || p.folded || p.drawDone) return 'Already done';
-  const idx = [...new Set((discards ?? []).map(Number))].filter((i) => Number.isInteger(i) && i >= 0 && i < 5);
-  const n = Math.min(idx.length, g.deck.length - g.deckPos);
-  const use = idx.slice(0, n);
-  for (const i of use) p.hand[i] = g.deck[g.deckPos++];
-  p.draws.push(use); p.stages.push(p.hand.slice()); p.drawDone = true;
-  const seat = seatOf(room, token);
-  say(room, use.length ? `${seat.name} draws ${use.length}.` : `${seat.name} stands pat${auto ? ' (timed out)' : ''}.`);
-  if (live(g).every((t) => g.players[t].drawDone)) return advance(room);
+// Discard: replaces EXACTLY the given positions with the next cards of this player's own deck order. Positions
+// not listed are never touched. `expect` (the hand the client was looking at) and `step` guard against stale or
+// double-submitted requests, so a repeated click can never swap out cards the player kept.
+function discard(room, token, { indices, expect, step } = {}) {
+  const m = room.match; const p = m?.phase === 'playing' && m.cur.players[token];
+  if (!p) return 'Not playing this round';
+  if (p.done) return 'You already finished this round';
+  if (p.keeps.length >= 2) return 'No discards left';
+  if (step !== undefined && step !== p.keeps.length) return 'Stale request';
+  if (expect && expect.join() !== p.hand.join()) return 'Your hand changed; refresh';
+  const idx = [...new Set((indices ?? []).map(Number))].filter((i) => Number.isInteger(i) && i >= 0 && i < 5);
+  if (!idx.length) return 'Select cards to discard';
+  for (const i of idx) p.hand[i] = p.order[p.pos++];
+  p.keeps.push([0, 1, 2, 3, 4].filter((i) => !idx.includes(i)));
+  p.lastNew = idx;
+  p.stages.push(p.hand.slice());
+  if (p.keeps.length === 2) return finishPlayer(room, token);
   broadcast(room);
 }
 
-const cardsOf = (ids) => ids.map((id) => CARD.get(id));
+function finishPlayer(room, token, why) {
+  const m = room.match; const p = m.cur.players[token];
+  if (!p || p.done) return;
+  p.done = true;
+  p.finishMs = Math.min(Date.now() - m.cur.startedAt, ROUND_MS);
+  p.result = scoreHand(p.hand.map((id) => CARD.get(id)), META);
+  if (why) say(room, `${m.table[token].name} ${why}: auto-stand.`);
+  const waiting = Object.keys(m.cur.players).filter((t) => !m.cur.players[t].done && !m.table[t].left);
+  if (waiting.length === 0) return endRound(room);
+  broadcast(room);
+}
 
-function endHand(room) {
-  const g = room.game; clearTimer(room);
-  g.phase = 'showdown'; g.turn = null;
-  const contenders = live(g);
-  const results = {};
-  for (const t of contenders) results[t] = scoreHand(cardsOf(g.players[t].hand), META);
-  // Side pots from contribution layers.
-  const contrib = g.order.map((t) => ({ t, c: g.players[t].contributed }));
-  const levels = [...new Set(contrib.map((x) => x.c))].filter((c) => c > 0).sort((a, b) => a - b);
-  const winnings = {}; let prev = 0; const pots = [];
-  for (const lvl of levels) {
-    const amount = contrib.reduce((s, x) => s + Math.max(0, Math.min(x.c, lvl) - prev), 0);
-    const eligible = contenders.filter((t) => g.players[t].contributed >= lvl);
-    prev = lvl;
-    if (!amount) continue;
-    const pool = eligible.length ? eligible : contenders;
-    const sorted = [...pool].sort((a, b) => compareResults(results[a], results[b]));
-    const top = sorted.filter((t) => compareResults(results[t], results[sorted[0]]) === 0);
-    const share = Math.floor(amount / top.length); let rem = amount - share * top.length;
-    for (const t of top) { winnings[t] = (winnings[t] ?? 0) + share + (rem-- > 0 ? 1 : 0); }
-    pots.push({ amount, winners: top.map((t) => seatOf(room, t)?.name ?? '?') });
+function endRound(room) {
+  const m = room.match; clearTimeout(room.roundTimer);
+  const entries = Object.entries(m.cur.players);
+  for (const [t, p] of entries) {
+    if (!p.done) { p.done = true; p.finishMs = ROUND_MS; p.result = scoreHand(p.hand.map((id) => CARD.get(id)), META); }
+    const row = m.table[t];
+    row.rounds.push(p.result.points); row.total += p.result.points; row.best = Math.max(row.best, p.result.points); row.finishMs += p.finishMs;
   }
-  for (const [t, w] of Object.entries(winnings)) { const s = seatOf(room, t); if (s) s.chips += w; }
-  const uncontested = contenders.length === 1;
-  room.lastResult = {
-    handNo: room.handNo, uncontested, pot: g.pot, pots,
-    players: g.order.map((t) => {
-      const s = seatOf(room, t); const p = g.players[t]; const r = results[t];
-      const show = !uncontested && r;
+  // Participants who weren't dealt in (left before the round) score 0 for it.
+  for (const t of m.participants) if (!m.cur.players[t]) m.table[t].rounds.push(0);
+  // One round winner: highest score, then earliest finisher, then seat.
+  const [win] = entries.sort(([a, x], [b, y]) => y.result.points - x.result.points || x.finishMs - y.finishMs || m.participants.indexOf(a) - m.participants.indexOf(b));
+  if (win) m.table[win[0]].roundsWon++;
+  m.last = {
+    round: m.round, deckSize: m.cur.deck.length, winner: win ? m.table[win[0]].name : null,
+    results: m.participants.filter((t) => m.cur.players[t]).map((t) => {
+      const p = m.cur.players[t];
+      return { name: m.table[t].name, points: p.result.points, hand: p.result.hand, matches: p.result.matches,
+        cards: p.hand.map(publicCard), newIdx: p.lastNew, discards: p.keeps.map((k) => 5 - k.length), finishMs: p.finishMs };
+    }).sort((a, b) => b.points - a.points || a.finishMs - b.finishMs),
+  };
+  say(room, `Round ${m.round}: ${m.last.winner} wins the round with ${m.last.results[0]?.points ?? 0} pts.`);
+  for (const s of room.seats) s.ready = false;
+  if (m.round >= ROUNDS || playingNow(m).length < 2) {
+    m.phase = 'final';
+    const table = standings(m);
+    const champ = table.find((r) => !r.left) ?? table[0]; // players who left forfeit the title
+    m.champion = champ?.name; m.championPts = champ?.total; m.championWhy = champ === table[0] ? (tieReason(m) ?? (m.round < ROUNDS ? 'everyone else left' : null)) : 'players above left the match';
+    say(room, `🏆 ${m.champion} is the champion with ${m.championPts} pts${m.championWhy ? ` (${m.championWhy})` : ''}! Ready up for a new match.`);
+  } else {
+    m.phase = 'roundEnd';
+    say(room, `Ready up for round ${m.round + 1}.`);
+  }
+  broadcast(room);
+}
+
+// ---------- Views ----------
+function broadcast(room) {
+  for (const s of room.seats) if (s.socketId) io.to(s.socketId).emit('state', viewFor(room, s.token));
+}
+function viewFor(room, token) {
+  const m = room.match;
+  const cur = m?.phase === 'playing' ? m.cur : null;
+  const mine = cur?.players[token];
+  return {
+    code: room.code, host: room.host === token, rounds: ROUNDS, roundMs: ROUND_MS, nextAt: room.nextAt,
+    readyCheck: m?.phase === 'playing' ? null : readyInfo(room),
+    seats: room.seats.map((s) => {
+      const p = cur?.players[s.token]; const row = m?.table[s.token];
       return {
-        name: s?.name ?? 'Left', folded: p.folded, won: winnings[t] ?? 0, net: (winnings[t] ?? 0) - p.contributed,
-        hand: show ? r.hand : null, points: show ? r.points : null, bonus: show ? BONUS[r.hand] : null,
-        matches: show ? r.matches : [], cards: show ? p.hand.map(publicCard) : [],
-        stages: show ? p.stages.map((h) => scoreHand(cardsOf(h), META)) : [],
+        name: s.name, isYou: s.token === token, isHost: s.token === room.host, connected: !!s.socketId,
+        readyUp: !!s.ready, inMatch: !!row, total: row?.total ?? null,
+        status: cur ? (p ? (p.done ? 'Finished' : `Playing · ${2 - p.keeps.length} discards left`) : 'Spectating') : null,
       };
     }),
+    match: m && {
+      no: room.matchNo, phase: m.phase, round: m.round, champion: m.champion ?? null, championPts: m.championPts ?? null, championWhy: m.championWhy ?? null,
+      deadline: cur?.deadline ?? null, table: standings(m), last: m.last, youPlay: m.participants.includes(token),
+      waitingFor: cur ? Object.keys(cur.players).filter((t) => !cur.players[t].done && !m.table[t].left).map((t) => m.table[t].name) : [],
+      you: mine && { hand: mine.hand.map(publicCard), step: mine.keeps.length, discardsLeft: 2 - mine.keeps.length, deckLeft: DECK_SIZE - mine.pos, done: mine.done, result: mine.done ? mine.result : null, lastNew: mine.lastNew },
+    },
+    log: room.log.slice(-25),
   };
-  const winners = Object.keys(winnings).map((t) => seatOf(room, t)?.name).filter(Boolean);
-  say(room, uncontested ? `${winners[0]} wins ${g.pot} (everyone else folded).` : `${winners.join(' & ')} win${winners.length > 1 ? '' : 's'} the pot of ${g.pot}.`);
-  for (const s of room.seats) {
-    const a = account(s.token); a.chips = s.chips;
-    if (g.players[s.token]) { a.hands++; if (winnings[s.token]) a.won++; }
-  }
-  saveBalances();
-  room.game = null;
-  // Drop seats that left mid-hand.
-  room.seats = room.seats.filter((s) => !s.leaving);
-  if (!room.seats.some((s) => s.token === room.host) && room.seats[0]) room.host = room.seats[0].token;
-  // Everyone has to ready up again before the next deal.
-  for (const s of room.seats) s.ready = false;
-  room.nextAt = null;
-  say(room, 'Ready up for the next hand.');
-  broadcast(room);
 }
 
 // ---------- Sockets ----------
@@ -338,7 +268,8 @@ io.on('connection', (socket) => {
   let roomCode = null;
   const room = () => rooms.get(roomCode);
   const ack = (cb, v) => typeof cb === 'function' && cb(v);
-  socket.emit('me', { chips: account(token).chips, name: account(token).name });
+  const reply = (cb, err) => ack(cb, typeof err === 'string' ? { error: err } : { ok: true });
+  const cleanName = (n) => String(n ?? '').slice(0, 20).trim() || undefined;
 
   function join(code, name, cb) {
     const r = rooms.get(String(code ?? '').toUpperCase());
@@ -346,18 +277,18 @@ io.on('connection', (socket) => {
     let s = seatOf(r, token);
     if (!s) {
       if (r.seats.length >= MAX_PLAYERS) return ack(cb, { error: 'Room is full (4 players max)' });
-      const a = account(token, name);
-      s = { token, name: a.name, chips: a.chips, socketId: null, sittingOut: false, ready: false };
+      s = { token, name: name ?? 'Player', socketId: null, ready: false };
       r.seats.push(s);
-      say(r, `${s.name} joined with ${s.chips} chips.`);
-      checkReady(r); // a new (not-ready) player cancels any pending deal
+      say(r, `${s.name} joined${r.match && r.match.phase !== 'final' && !r.match.participants.includes(token) ? ' (spectating until the next match)' : ''}.`);
     } else {
-      if (name) s.name = account(token, name).name;
+      if (name) s.name = name;
       s.leaving = false;
       if (!s.socketId) say(r, `${s.name} reconnected.`);
     }
+    if (r.match?.table[token]?.left) r.match.table[token].left = false; // a participant who comes back rejoins the match
     if (roomCode && roomCode !== r.code) leave();
     s.socketId = socket.id; roomCode = r.code; socket.join(r.code);
+    checkReady(r); // a newcomer (not ready) cancels any pending countdown
     ack(cb, { ok: true, code: r.code });
     broadcast(r);
   }
@@ -365,43 +296,43 @@ io.on('connection', (socket) => {
     const r = room(); if (!r) return;
     const s = seatOf(r, token); roomCode = null; socket.leave(r.code);
     if (!s) return;
-    s.socketId = null;
     say(r, `${s.name} left.`);
-    if (r.game?.players[token] && !r.game.players[token].folded) {
-      s.leaving = true;
-      if (r.game.phase === 'bet' && r.game.turn === token) act(r, token, { type: 'fold' });
-      else { r.game.players[token].folded = true; if (live(r.game).length === 1) endHand(r); else if (r.game.phase === 'draw' && live(r.game).every((t) => r.game.players[t].drawDone)) advance(r); }
-    } else if (r.game?.players[token]) s.leaving = true;
-    else r.seats = r.seats.filter((x) => x !== s);
+    r.seats = r.seats.filter((x) => x !== s);
+    const m = r.match;
+    if (m?.table[token]) {
+      m.table[token].left = true;
+      // A leaver no longer holds up the round.
+      if (m.phase === 'playing' && m.cur.players[token] && !m.cur.players[token].done) finishPlayer(r, token, 'left');
+      else if (m.phase === 'playing' && Object.keys(m.cur.players).every((t) => m.cur.players[t].done || m.table[t].left)) endRound(r);
+      // Fewer than 2 players left mid-round: finish the round now (it ends the match).
+      if (m.phase === 'playing' && playingNow(m).length < 2) for (const t of Object.keys(m.cur.players)) if (!m.cur.players[t].done) finishPlayer(r, t, 'is the last player');
+    }
     if (!r.seats.some((x) => x.token === r.host) && r.seats[0]) r.host = r.seats[0].token;
-    if (r.seats.length === 0) { clearTimer(r); rooms.delete(r.code); return; }
-    s.ready = false;
-    checkReady(r); // a leaver no longer blocks (or cancels a deal if the room drops below 2)
+    if (r.seats.length === 0) { clearTimer(r); clearTimeout(r.roundTimer); rooms.delete(r.code); return; }
+    if (m && m.phase !== 'playing' && m.phase !== 'final' && playingNow(m).length < 2) {
+      m.phase = 'final'; const t = standings(m); const c = t.find((x) => !x.left) ?? t[0]; m.champion = c?.name; m.championPts = c?.total; m.championWhy = 'everyone else left';
+      say(r, `Match ended early: ${m.champion} wins.`);
+    }
+    checkReady(r);
     broadcast(r);
   }
 
-  socket.on('setName', (name, cb) => { account(token, String(name).slice(0, 20).trim() || 'Player'); ack(cb, { ok: true }); });
-  socket.on('create', ({ name } = {}, cb) => { const r = createRoom(token); join(r.code, String(name ?? '').slice(0, 20).trim() || undefined, cb); });
-  socket.on('join', ({ code, name } = {}, cb) => join(code, String(name ?? '').slice(0, 20).trim() || undefined, cb));
+  socket.on('create', ({ name } = {}, cb) => { const r = createRoom(token); join(r.code, cleanName(name), cb); });
+  socket.on('join', ({ code, name } = {}, cb) => join(code, cleanName(name), cb));
   socket.on('leave', (_, cb) => { leave(); ack(cb, { ok: true }); });
-  // Ready / not ready. Nobody can start the hand for everyone.
   socket.on('ready', ({ ready } = {}, cb) => {
     const r = room(); const s = r && seatOf(r, token);
     if (!s) return ack(cb, { error: 'No room' });
-    if (r.game) return ack(cb, { error: 'Hand in progress' });
-    if (ready && s.chips < ANTE) return ack(cb, { error: 'Rebuy first: you need chips to play' });
+    if (r.match?.phase === 'playing') return ack(cb, { error: 'Round in progress' });
     const want = ready === undefined ? !s.ready : !!ready;
     if (s.ready !== want) { s.ready = want; say(r, `${s.name} is ${want ? 'ready' : 'not ready'}.`); }
     checkReady(r); broadcast(r); ack(cb, { ok: true, ready: s.ready });
   });
-  socket.on('act', (action, cb) => { const r = room(); const err = r ? act(r, token, action ?? {}) : 'No room'; ack(cb, typeof err === 'string' ? { error: err } : { ok: true }); });
-  socket.on('draw', ({ discards } = {}, cb) => { const r = room(); const err = r ? doDraw(r, token, discards) : 'No room'; ack(cb, typeof err === 'string' ? { error: err } : { ok: true }); });
-  socket.on('rebuy', (_, cb) => {
-    const r = room(); const s = r && seatOf(r, token);
-    if (!s || r.game?.players[token]) return ack(cb, { error: 'Rebuy between hands only' });
-    if (s.chips >= ANTE) return ack(cb, { error: 'You still have chips' });
-    s.chips = START_CHIPS; account(token).chips = s.chips; saveBalances();
-    s.ready = false; say(r, `${s.name} rebuys for ${START_CHIPS}.`); checkReady(r); broadcast(r); ack(cb, { ok: true });
+  socket.on('discard', (data, cb) => { const r = room(); reply(cb, r ? discard(r, token, data ?? {}) : 'No room'); });
+  socket.on('stand', (_, cb) => {
+    const r = room(); const p = r?.match?.phase === 'playing' && r.match.cur.players[token];
+    if (!p || p.done) return reply(cb, 'Not playing');
+    finishPlayer(r, token); reply(cb);
   });
   socket.on('disconnect', () => {
     const r = room(); if (!r) return;
@@ -410,9 +341,9 @@ io.on('connection', (socket) => {
   });
 });
 
-// Clean up empty / abandoned rooms.
+// Clean up abandoned rooms.
 setInterval(() => {
-  for (const [code, r] of rooms) if (r.seats.every((s) => !s.socketId) && Date.now() - r.created > 30 * 60e3 && !r.game) { clearTimer(r); rooms.delete(code); }
+  for (const [code, r] of rooms) if (r.seats.every((s) => !s.socketId) && Date.now() - r.created > 30 * 60e3 && r.match?.phase !== 'playing') { clearTimer(r); clearTimeout(r.roundTimer); rooms.delete(code); }
 }, 60e3);
 
 http.listen(PORT, () => console.log(`FootDraw on http://localhost:${PORT}  (${POOL.length} cards, ${Object.keys(META.traits).length} traits)`));

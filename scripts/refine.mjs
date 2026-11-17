@@ -1,5 +1,5 @@
 // Post-processes public/data/pool.json: tidy labels, cap noisy trait types per card, drop unshared traits.
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 const file = 'public/data/pool.json';
 const d = JSON.parse(readFileSync(file, 'utf8'));
 const CAP = { award: 3, event: 4, team: 6, pos: 2, occ: 2, city: 1, venue: 1, league: 2, country: 2 };
@@ -19,6 +19,24 @@ for (const c of d.cards) {
     return [...self, ...rest.slice(0, Math.max(0, (CAP[type] ?? 9) - self.length))];
   });
 }
+// --- Remove non-footballers ---
+// 1) Manual denylist (titles or QIDs).
+const deny = new Set(readFileSync('scripts/denylist.txt', 'utf8').split('\n').map((l) => l.replace(/#.*/, '').trim()).filter(Boolean));
+// 2) Senior career check from scripts/player-audit.json (built by scripts/audit-players.mjs): players need at least
+//    MIN_APPS recorded senior club appearances + caps on Wikidata, which drops singers/actors/politicians whose only
+//    football was a youth or amateur spell.
+const MIN_APPS = 20;
+const audit = existsSync('scripts/player-audit.json') ? JSON.parse(readFileSync('scripts/player-audit.json', 'utf8')) : {};
+const removed = [];
+d.cards = d.cards.filter((c) => {
+  const a = audit[c.id];
+  const why = deny.has(c.title) || deny.has(c.id) ? 'denylist'
+    : c.kind === 'player' && a && a.apps + a.caps < MIN_APPS ? `only ${a.apps + a.caps} senior apps/caps` : null;
+  if (why) removed.push(`${c.title} (${why})`);
+  return !why;
+});
+if (removed.length) console.log(`Removed ${removed.length} non-footballers: ${removed.join('; ')}`);
+
 const counts = {};
 for (const c of d.cards) for (const k of c.traits) counts[k] = (counts[k] ?? 0) + 1;
 for (const c of d.cards) c.traits = c.traits.filter((k) => counts[k] >= 2);

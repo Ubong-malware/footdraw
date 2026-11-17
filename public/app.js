@@ -8,20 +8,20 @@ const isLogo = (u) => /logo|crest|badge|\.svg/i.test(u ?? '');
 const today = () => new Date().toLocaleDateString('en-CA');
 const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-// Browser identity (keeps your chips + seat across reloads).
+// Browser identity (keeps your seat across reloads and reconnects).
 let token = localStorage.getItem('fd_token');
 if (!token) { token = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join(''); localStorage.setItem('fd_token', token); }
 
 const MODES = [
   { mode: 'daily', name: 'Daily deck', blurb: "Today's 15 cards." },
   { mode: 'random', name: 'Random deck', blurb: '15 cards from the entire football pool.' },
-  { mode: 'friends', name: 'Play with friends', blurb: 'Poker with chips, up to 4 players.' },
+  { mode: 'friends', name: 'Play with friends', blurb: '10-round match, up to 4 players.' },
 ];
 
 const S = {
   view: 'home', menu: false, modal: null, // modal: {type:'help'} | {type:'card', card}
   solo: null, // solo game
-  room: null, me: null, roomError: null, selected: [], raise: null, name: localStorage.getItem('fd_name') ?? '',
+  room: null, roomError: null, selected: [], busy: false, name: localStorage.getItem('fd_name') ?? '',
 };
 
 // ---------- Data ----------
@@ -30,7 +30,7 @@ const loadPool = () => (poolPromise ??= fetch('/data/pool.json').then((r) => r.j
 
 // ---------- Rendering helpers ----------
 const seen = new Set();
-function cardHTML(c, { idx, discarded, toggle, info, suit, hl, link = true } = {}) {
+function cardHTML(c, { idx, discarded, toggle, info, suit, hl, link = true, badge } = {}) {
   const fresh = !seen.has(c.id); seen.add(c.id);
   const pic = c.thumbnail ? `<img src="${esc(c.thumbnail)}" alt="" decoding="async">` : `<div class="letter" aria-hidden="true">${esc(c.title[0])}</div>`;
   const inner = `<div class="pic ${isLogo(c.thumbnail) ? 'contain' : ''}">${pic}</div><div class="cap"><div class="ttl">${esc(c.title)}</div>${c.description ? `<div class="desc">${esc(c.description)}</div>` : ''}</div>`;
@@ -39,7 +39,7 @@ function cardHTML(c, { idx, discarded, toggle, info, suit, hl, link = true } = {
     ? `<button type="button" class="${cls}" data-act="toggle" data-i="${idx}" aria-pressed="${!!discarded}">${inner}</button>`
     : link ? `<a class="${cls}" href="${wikiUrl(c.title)}" target="_blank" rel="noopener noreferrer">${inner}</a>`
       : `<button type="button" class="${cls}" data-act="cardinfo" data-id="${esc(c.id)}">${inner}</button>`;
-  return `<div class="slot${fresh ? ' fresh' : ''}">${body}${discarded ? '<div class="tag" aria-hidden="true">Discard</div>' : ''}${suit ? `<div class="suit" aria-hidden="true">${suit}</div>` : ''}${info ? `<button type="button" class="info" data-act="info" data-id="${esc(c.id)}" aria-label="About ${esc(c.title)}">i</button>` : ''}</div>`;
+  return `<div class="slot${fresh ? ' fresh' : ''}">${body}${discarded ? '<div class="tag" aria-hidden="true">Swap out</div>' : ''}${badge ? `<div class="newb">${esc(badge)}</div>` : ''}${suit ? `<div class="suit" aria-hidden="true">${suit}</div>` : ''}${info ? `<button type="button" class="info" data-act="info" data-id="${esc(c.id)}" aria-label="About ${esc(c.title)}">i</button>` : ''}</div>`;
 }
 const pileHTML = (n) => {
   const st = 2.5, k = Math.max(n - 1, 0);
@@ -75,15 +75,14 @@ function modalHTML() {
     <h3>Playing solo</h3><ul><li>You're dealt 5 cards from a 15-card deck.</li><li>Tap the cards you want to swap, then <strong>Discard</strong>. You'll draw the same number of cards from the deck.</li><li>You get two chances to discard and draw. <strong>Stand</strong> any time to keep your hand.</li><li>Tap <span class="ibadge">i</span> on a card to read about it. The pile in the bottom-right corner shows how many cards are left.</li></ul>
     <h3>Scoring</h3><ul><li>Every trait two or more cards share scores points.</li><li>Rarer traits score more: five players born in Rosario beat five forwards.</li><li>The most common traits, like Forward or Born in the 1980s, score little or nothing and don't count toward the hand shape.</li><li>Bigger groups score much more, plus a bonus for the shape of the hand.</li><li>What your cards share stays hidden until the end.</li></ul>
     <h3>Hands</h3><ol>${HANDS.map((h) => `<li><strong>${h} (+${BONUS[h]})</strong>: ${{ Flush: 'all five share a trait', 'Four of a Kind': 'four share a trait', 'Full House': 'three share one trait, two share another', 'Three of a Kind': 'three share a trait', 'Two Pair': 'two separate pairs', Pair: 'two share a trait', 'High Card': 'nothing shared' }[h]}</li>`).join('')}</ol>
-    <h3>Play with friends (poker)</h3><ul>
-      <li>2–4 players per room. Share the room link or 5-letter code. Everyone starts with <strong>1,000 chips</strong>, kept in this browser.</li>
-      <li>Each hand: everyone antes 10 and gets 5 private cards from a shared deck.</li>
-      <li><strong>Betting round</strong> → <strong>Draw 1</strong> → betting → <strong>Draw 2</strong> → final betting → <strong>Showdown</strong>. Draws happen at the same time; betting goes clockwise from the dealer's left.</li>
-      <li>Bet, check, call, raise (no-limit, minimum raise = last raise, at least 20) or fold. All-ins create side pots.</li>
-      <li>At showdown the highest FootDraw score (trait points + hand bonus) wins the pot; ties split it. If everyone else folds, the last player wins without showing.</li>
-      <li>45 seconds per turn: time out and you check (or fold if facing a bet). Out of chips? Rebuy between hands.</li>
-      <li>Before every hand, everyone presses <strong>Ready</strong>. The hand deals only once all seated players are ready.</li></ul>
-    <h3>Modes</h3><ul><li><strong>Daily deck</strong>: the day's 15 cards are the same for everyone, shuffled uniquely for each player.</li><li><strong>Random deck</strong>: 15 cards from the entire pool.</li><li><strong>Play with friends</strong>: online poker rooms.</li></ul></div>`);
+    <h3>Play with friends: 10-round match</h3><ul>
+      <li>2–4 players per room. Share the room link or 5-letter code.</li>
+      <li>Everyone presses <strong>Ready</strong>; the match starts only when all players are ready, and again before every round.</li>
+      <li>Each round is a normal FootDraw game. All players get the <strong>same 15-card deck</strong> (a new deck every round), each in their own shuffle, and play at the same time: tap cards to swap out, two discards, or Stand. Cards you keep never change.</li>
+      <li>A round ends when everyone has finished (2 minutes max; anyone still playing auto-stands).</li>
+      <li>Your round score is added to the <strong>league table</strong>. Highest score wins the round (ties: whoever finished first).</li>
+      <li>After round 10 the top of the table is champion. Level on points? Then most rounds won, then best single round, then fastest total finishing time.</li></ul>
+    <h3>Modes</h3><ul><li><strong>Daily deck</strong>: the day's 15 cards are the same for everyone, shuffled uniquely for each player.</li><li><strong>Random deck</strong>: 15 cards from the entire pool.</li><li><strong>Play with friends</strong>: a 10-round league match against up to 3 friends.</li></ul></div>`);
 }
 
 // ---------- Views ----------
@@ -112,12 +111,11 @@ function recordStats(mode, result) {
 }
 function statsHTML() {
   const all = getStats();
-  const mp = S.me ? `<section><h2>Play with friends</h2><dl><div><dt>Chip balance</dt><dd>${S.me.chips.toLocaleString()}</dd></div></dl></section>` : '';
   return `<div class="stats">${MODES.slice(0, 2).map(({ mode, name }) => {
     const s = all[mode];
     return `<section><h2>${name}</h2>${!s?.games ? '<p class="note">No games yet.</p>' : `<dl><div><dt>High score</dt><dd>${s.best} pts</dd></div><div><dt>Games</dt><dd>${s.games.toLocaleString()}</dd></div></dl>
       <table class="wt"><thead><tr><th scope="col">Hand</th><th scope="col">Count</th></tr></thead><tbody>${HANDS.map((h) => `<tr><td>${h}</td><td>${(s.hands[h] ?? 0).toLocaleString()}</td></tr>`).join('')}</tbody></table>`}</section>`;
-  }).join('')}${mp}<p class="note">Stats belong to this browser. Clearing its data or starting in a different browser won't carry the data over.</p></div>`;
+  }).join('')}<p class="note">Stats belong to this browser. Clearing its data or starting in a different browser won't carry the data over.</p></div>`;
 }
 
 // ---------- Solo game ----------
@@ -202,110 +200,103 @@ function soloHTML() {
   return { body, after };
 }
 
-// ---------- Multiplayer ----------
+// ---------- Multiplayer: 10-round matches ----------
 let socket = null;
 function connect() {
   if (socket) return socket;
   if (!window.io) { S.roomError = 'Multiplayer server not reachable.'; return null; }
   socket = io({ auth: { token } });
-  socket.on('me', (me) => { S.me = me; if (!S.name && me.name !== 'Player') S.name = me.name; });
   socket.on('state', (st) => {
-    const prevPhase = S.room?.game?.phase + ':' + S.room?.game?.street;
-    S.room = st; S.me = { ...(S.me ?? {}), chips: st.seats.find((s) => s.isYou)?.chips ?? S.me?.chips };
-    const phase = st.game?.phase + ':' + st.game?.street;
-    if (phase !== prevPhase || st.game?.you?.drawDone) S.selected = [];
-    if (st.handNo !== S.lastHandNo) { S.lastHandNo = st.handNo; seen.clear(); }
+    const prevKey = S.roomKey;
+    const m = st.match;
+    // Selection belongs to one exact hand state (round + discard step). Anything else clears it, so a
+    // stale selection can never be applied to a different hand.
+    S.roomKey = m?.you ? `${m.no}:${m.round}:${m.you.step}:${m.you.done}` : null;
+    if (S.roomKey !== prevKey) S.selected = [];
+    const roundKey = m ? `${m.no}:${m.round}` : null;
+    if (roundKey !== S.lastRoundKey) { S.lastRoundKey = roundKey; seen.clear(); }
+    S.room = st; S.busy = false;
     if (S.view === 'room' || S.view === 'lobby') { S.view = 'room'; render(); }
   });
   socket.on('connect', () => { // reconnect: rejoin the room we were in
     const code = S.room?.code ?? sessionStorage.getItem('fd_room');
-    if (code && (S.view === 'room' || S.view === 'lobby')) socket.emit('join', { code, name: S.name }, (r) => { if (r?.error) { S.roomError = r.error; S.room = null; S.view = 'lobby'; render(); } });
+    if (code && (S.view === 'room' || S.view === 'lobby')) socket.emit('join', { code, name: S.name }, (r) => { if (r?.error) { S.roomError = r.error; S.room = null; S.view = 'lobby'; render(); } else { S.roomError = null; } });
   });
   socket.on('disconnect', () => { if (S.view === 'room') { S.roomError = 'Connection lost. Reconnecting…'; render(); } });
   return socket;
 }
 function lobbyHTML() {
   return pageHead('Play with friends') + `<div class="form">
-    <p class="prose">Poker with football cards. Create a room and send the link to up to 3 friends, or join with a code. ${S.me ? `Your balance: <strong>${S.me.chips.toLocaleString()} chips</strong>.` : ''}</p>
+    <p class="prose">A 10-round FootDraw match for 2–4 players. Everyone plays the same deck each round; points add up in a league table and the top of the table after round 10 is champion. Create a room and send the link, or join with a code.</p>
     <label>Your name<input id="nm" maxlength="20" autocomplete="nickname" value="${esc(S.name)}" placeholder="e.g. Pelé"></label>
     <button class="btn primary" data-act="create">Create a room</button>
     <div class="row"><input id="code" maxlength="5" placeholder="Room code" style="text-transform:uppercase" value="${esc(S.joinCode ?? '')}"><button class="btn" data-act="join">Join room</button></div>
     ${S.roomError ? `<p class="err" role="alert">${esc(S.roomError)}</p>` : ''}</div>`;
 }
-const phaseLabel = (g) => g.phase === 'bet' ? `Betting round ${g.street} of 3` : g.phase === 'draw' ? `Draw ${g.street} of 2` : 'Showdown';
+const ord = (n) => n + ({ 1: 'st', 2: 'nd', 3: 'rd' }[n % 100 > 10 && n % 100 < 14 ? 0 : n % 10] ?? 'th');
+function leagueTableHTML(m, { final = false } = {}) {
+  const rows = m.table;
+  return `<table class="wt league"><thead><tr><th scope="col">Pos</th><th scope="col">Player</th><th scope="col">Round ${m.round}</th><th scope="col">Rounds won</th><th scope="col">Best</th><th scope="col">Total</th></tr></thead><tbody>
+    ${rows.map((r) => `<tr class="${r.pos === 1 ? 'lead' : ''}"><td>${final && r.pos === 1 ? '🏆' : ord(r.pos)}</td><td>${esc(r.name)}${r.left ? ' <span class="muted">(left)</span>' : ''}</td><td>+${r.roundScore}</td><td>${r.roundsWon}</td><td>${r.best}</td><td><strong>${r.total}</strong></td></tr>`).join('')}
+  </tbody></table>`;
+}
+function roundResultsHTML(m) {
+  const L = m.last; if (!L) return '';
+  return `<section class="section"><h2>Round ${L.round} results</h2>${L.results.map((p, i) => `<div class="player-res"><h3><span>${i === 0 ? '⭐ ' : ''}${esc(p.name)} · ${p.hand}</span><span class="${i === 0 ? 'win' : 'muted'}">${p.points} pts</span></h3>
+    <div class="mini">${p.cards.map((c, j) => cardHTML(c, { badge: p.newIdx.includes(j) ? 'New' : null })).join('')}</div>${matchTable(p, p.cards)}</div>`).join('')}</section>`;
+}
+function readyPanelHTML(st) {
+  const rc = st.readyCheck ?? { ready: 0, total: 0, waitingFor: [], allReady: false, next: 'Start match' };
+  const waitText = rc.total < 2 ? 'Waiting for at least 2 players… Share the invite link.' : rc.allReady ? 'Everyone is ready!' : `Waiting for: ${rc.waitingFor.map(esc).join(', ')}`;
+  const count = st.nextAt ? `<span data-next="${st.nextAt}" data-label="${esc(rc.next)} in">${esc(rc.next)} in ${Math.max(0, Math.ceil((st.nextAt - Date.now()) / 1000))}s</span>` : '';
+  return { waitText, rc, panel: `<div class="readycheck" role="status" aria-live="polite" title="${esc(waitText)}">
+      <div class="rc-count"><b>${rc.ready}/${rc.total}</b> ready</div><div class="rc-wait">${waitText}</div>
+      <ul class="rc-list">${st.seats.map((s) => `<li class="${s.readyUp ? 'ok' : 'no'}">${s.readyUp ? '✓' : '…'} ${esc(s.name)}${s.isYou ? ' (you)' : ''}</li>`).join('')}</ul>
+      ${count ? `<div class="rc-deal">${count}</div>` : ''}</div>` };
+}
 function roomHTML() {
   const st = S.room; if (!st) return { body: '<p class="center-msg">Joining…</p>', after: '' };
-  const g = st.game; const you = g?.you; const meSeat = st.seats.find((s) => s.isYou);
+  const m = st.match; const playing = m?.phase === 'playing';
+  const meSeat = st.seats.find((s) => s.isYou);
   const seatsHTML = Array.from({ length: 4 }, (_, i) => {
     const s = st.seats[i];
     if (!s) return `<div class="seat empty">Open seat</div>`;
-    const isTurn = g?.phase === 'bet' && g.turnSeat === i;
-    let status = !g ? (s.broke ? 'Out of chips' : s.readyUp ? '<span class="rdy">✓ Ready</span>' : '<span class="nrdy">Not ready</span>') : !s.inHand ? 'Waiting for next hand' : s.folded ? 'Folded' : s.allIn ? 'All in' : g?.phase === 'draw' ? (s.ready ? `Drew ${s.drawn.at(-1) ?? 0}` : 'Choosing…') : s.bet ? `Bet ${s.bet}` : '';
-    return `<div class="seat ${isTurn ? 'turn' : ''} ${s.folded ? 'folded' : ''} ${!g && s.readyUp ? 'is-ready' : ''}" title="${!g ? (s.broke ? `${esc(s.name)} is out of chips` : s.readyUp ? `${esc(s.name)} is ready` : `Waiting for ${esc(s.name)} to ready up`) : ''}">${s.dealer ? '<span class="d" title="Dealer">D</span>' : ''}<div class="nm">${esc(s.name)}${s.isYou ? ' (you)' : ''}${s.isHost ? ' ★' : ''}</div><div class="ch">${s.chips.toLocaleString()} chips</div><div class="st">${status}${s.connected ? '' : ' <span class="off">· offline</span>'}</div></div>`;
+    const status = playing ? (s.status ?? '') : (s.readyUp ? '<span class="rdy">✓ Ready</span>' : '<span class="nrdy">Not ready</span>');
+    return `<div class="seat ${!playing && s.readyUp ? 'is-ready' : ''} ${playing && s.status === 'Finished' ? 'is-ready' : ''}" title="${!playing ? (s.readyUp ? `${esc(s.name)} is ready` : `Waiting for ${esc(s.name)} to ready up`) : esc(s.status ?? '')}"><div class="nm">${esc(s.name)}${s.isYou ? ' (you)' : ''}${s.isHost ? ' ★' : ''}</div><div class="ch">${s.total != null ? `${s.total} pts` : '&nbsp;'}</div><div class="st">${status}${s.connected ? '' : ' <span class="off">· offline</span>'}</div></div>`;
   }).join('');
   const invite = `${location.origin}/room/${st.code}`;
-  let body = `<div class="roomhead"><span>Room</span><span class="code">${st.code}</span><button class="btn small" data-act="copylink" data-link="${esc(invite)}">${S.copied ? 'Link copied' : 'Copy invite link'}</button><button class="btn small" data-act="leave">Leave</button>${S.roomError ? `<span class="err">${esc(S.roomError)}</span>` : ''}</div>
+  let body = `<div class="roomhead"><span>Room</span><span class="code">${st.code}</span><button class="btn small" data-act="copylink" data-link="${esc(invite)}">${S.copied ? 'Link copied' : 'Copy invite link'}</button><button class="btn small" data-act="leave">Leave</button>${m ? `<span class="muted">${m.phase === 'final' ? 'Match finished' : `Round ${m.round} of ${st.rounds}`}</span>` : ''}${S.roomError ? `<span class="err">${esc(S.roomError)}</span>` : ''}</div>
     <div class="seats">${seatsHTML}</div>`;
-  let bar = '', after = '';
-  if (g) {
-    const turnName = g.turnSeat != null ? st.seats[g.turnSeat]?.name : null;
-    body += `<div class="potline"><span>Pot <span class="pot">${g.pot}</span></span><span>${phaseLabel(g)}</span>${g.currentBet ? `<span>Bet ${g.currentBet}</span>` : ''}</div>`;
-    if (you && !you.folded) {
-      const drawing = g.phase === 'draw' && !you.drawDone;
-      body += `<div class="above">${discardsHTML(you.drawsLeft)}</div><div class="grid">${you.hand.map((c, i) => cardHTML(c, { idx: i, toggle: drawing, link: !drawing, discarded: drawing && S.selected.includes(i), info: true })).join('')}</div>`;
-    } else body += `<div class="above"><p class="center-msg">${you ? 'You folded. Waiting for the hand to finish…' : 'You joined mid-hand. You will be dealt in next hand.'}</p></div>`;
-    const timer = g.deadline ? `<div class="timer"><i data-deadline="${g.deadline}" style="width:${Math.max(0, Math.min(100, (g.deadline - Date.now()) / st.turnMs * 100))}%"></i></div>` : '';
-    let problem = '', buttons = '';
-    if (you && !you.folded && g.phase === 'bet' && g.yourTurn) {
-      const toCall = you.toCall; const max = meSeat.chips + (meSeat.bet ?? 0);
-      const minTo = Math.min(max, g.currentBet + g.minRaise);
-      if (S.raise === null || S.raise < minTo || S.raise > max) S.raise = minTo;
-      problem = `Your turn${toCall ? ` · ${toCall} to call` : ''}`;
-      buttons = `<div class="raise"><input type="range" id="rr" min="${minTo}" max="${max}" step="10" value="${S.raise}" aria-label="Raise amount"><input type="number" id="rn" min="${minTo}" max="${max}" value="${S.raise}" aria-label="Raise to"></div>
-        <button class="btn" data-act="fold">Fold</button>${toCall ? `<button class="btn" data-act="call">${toCall >= meSeat.chips ? 'Call all in' : `Call ${toCall}`}</button>` : `<button class="btn" data-act="check">Check</button>`}
-        <button class="btn primary" data-act="raise" ${max <= g.currentBet ? 'disabled' : ''}>${S.raise >= max ? 'All in' : g.currentBet ? `Raise to ${S.raise}` : `Bet ${S.raise}`}</button>`;
-      bar = `<div class="bar"><p class="problem">${problem}</p>${timer}<div class="pilewrap">${pileHTML(g.deckLeft)}</div><div class="buttons three">${buttons}</div></div>`;
-    } else if (you && !you.folded && g.phase === 'draw' && !you.drawDone) {
-      bar = `<div class="bar"><p class="problem">Draw ${g.street} of 2: tap cards to swap</p>${timer}<div class="pilewrap">${pileHTML(g.deckLeft)}</div><div class="buttons"><button class="btn" data-act="pat">Stand pat</button><button class="btn primary" data-act="mpdraw" ${S.selected.length ? '' : 'disabled'}>${S.selected.length ? `Discard ${S.selected.length}` : 'Select cards'}</button></div></div>`;
+  let after = '';
+  if (playing) {
+    const you = m.you;
+    const timer = m.deadline ? `<div class="timer"><i data-deadline="${m.deadline}" style="width:${Math.max(0, Math.min(100, (m.deadline - Date.now()) / st.roundMs * 100))}%"></i></div>` : '';
+    if (!you) {
+      body += `<div class="above"><p class="center-msg">Round ${m.round} in progress. You'll play in the next match.</p></div>`;
+    } else if (!you.done) {
+      const sel = S.selected;
+      body += `<div class="above">${discardsHTML(you.discardsLeft)}<p class="hint">Tap the cards you want to <strong>swap out</strong>. Cards you don't tap are kept and never change.</p></div>
+        <div class="grid">${you.hand.map((c, i) => cardHTML(c, { idx: i, toggle: true, discarded: sel.includes(i), info: true, badge: !sel.includes(i) && you.lastNew.includes(i) ? 'New' : null })).join('')}</div>
+        <div class="below"><div class="bar"><p class="problem">${sel.length ? `Swap ${sel.length}, keep ${5 - sel.length}` : `Round ${m.round} of ${st.rounds}`}</p>${timer}<div class="pilewrap">${pileHTML(you.deckLeft)}</div><div class="buttons"><button class="btn" data-act="mpstand" ${S.busy ? 'disabled' : ''}>Stand</button><button class="btn primary" data-act="mpdiscard" ${sel.length && !S.busy ? '' : 'disabled'}>${sel.length ? `Discard ${sel.length}` : 'Select cards'}</button></div></div></div>`;
     } else {
-      const wait = g.phase === 'bet' ? `Waiting for ${esc(turnName ?? '…')}` : 'Waiting for other players to draw…';
-      bar = `<div class="bar"><p class="problem muted">${wait}</p>${timer}<div class="pilewrap">${pileHTML(g.deckLeft)}</div><div class="buttons"></div></div>`;
+      const r = you.result;
+      body += `<div class="above"><div class="score"><h1>${r.hand}</h1><p class="pts"><span>${r.points}</span> pts</p><p class="line">Waiting for: ${m.waitingFor.map(esc).join(', ')}</p></div></div>
+        <div class="grid">${you.hand.map((c, i) => cardHTML(c, { badge: you.lastNew.includes(i) ? 'New' : null })).join('')}</div>
+        <div class="below"><div class="bar"><p class="problem muted">Round ends when everyone has finished.</p>${timer}<div class="pilewrap">${pileHTML(you.deckLeft)}</div><div class="buttons"></div></div></div>`;
+      after = matchTable(r, you.hand);
     }
-    body += `<div class="below">${bar}</div>`;
   } else {
-    const rc = st.readyCheck ?? { ready: 0, total: 0, waitingFor: [], broke: [], allReady: false };
-    const broke = meSeat && meSeat.chips < st.ante;
-    const meReady = !!meSeat?.readyUp;
-    const count = st.nextAt ? `<span data-next="${st.nextAt}" data-label="Dealing in">Dealing in ${Math.max(0, Math.ceil((st.nextAt - Date.now()) / 1000))}s</span>` : '';
-    const waitText = rc.total < 2 ? 'Waiting for at least 2 players with chips… Share the invite link.'
-      : rc.allReady ? 'Everyone is ready!' : `Waiting for: ${rc.waitingFor.map(esc).join(', ')}`;
-    // The ready-check panel: count, who we're waiting on, and the per-player list (also as a hover tooltip).
-    const panel = `<div class="readycheck" role="status" aria-live="polite" title="${esc(waitText)}">
-        <div class="rc-count"><b>${rc.ready}/${rc.total}</b> ready</div>
-        <div class="rc-wait">${waitText}</div>
-        <ul class="rc-list">${st.seats.map((s) => `<li class="${s.broke ? 'broke' : s.readyUp ? 'ok' : 'no'}">${s.broke ? '–' : s.readyUp ? '✓' : '…'} ${esc(s.name)}${s.isYou ? ' (you)' : ''}${s.broke ? ' · out of chips' : ''}</li>`).join('')}</ul>
-        ${count ? `<div class="rc-deal">${count}</div>` : ''}</div>`;
-    body += `<div class="above">${st.result ? resultHeadHTML(st) : ''}${panel}</div>
-      <div class="below"><div class="bar"><p class="problem muted" title="${esc(waitText)}">${rc.ready}/${rc.total} ready${rc.waitingFor.length && !rc.allReady ? ` · waiting for ${rc.waitingFor.map(esc).join(', ')}` : ''}</p><div class="pilewrap"></div><div class="buttons">${broke ? '<button class="btn" data-act="rebuy">Rebuy 1,000</button>' : '<span></span>'}<button class="btn ${meReady ? '' : 'primary'}" data-act="ready" data-ready="${meReady ? 0 : 1}" ${broke ? 'disabled' : ''} aria-pressed="${meReady}">${meReady ? '✓ Ready (click to cancel)' : st.handNo ? 'Ready for next hand' : 'Ready'}</button></div></div></div>`;
-    if (st.result) after = resultDetailHTML(st);
+    const { panel, rc, waitText } = readyPanelHTML(st);
+    let head = '';
+    if (m?.phase === 'final') head = `<div class="score"><h1>🏆 ${esc(m.champion)} is the champion</h1><p class="pts"><span>${m.championPts ?? m.table[0]?.total ?? 0}</span> pts</p><p class="line">Final table after ${m.round} rounds${m.championWhy ? ` · ${esc(m.championWhy)}` : ''}</p></div>`;
+    else if (m?.last) head = `<div class="score"><h1>Round ${m.last.round} of ${st.rounds}</h1><p class="line">${esc(m.last.winner)} wins the round with ${m.last.results[0]?.points ?? 0} pts</p></div>`;
+    body += `<div class="above">${head}${m ? leagueTableHTML(m, { final: m.phase === 'final' }) : ''}${panel}</div>
+      <div class="below"><div class="bar"><p class="problem muted" title="${esc(waitText)}">${rc.ready}/${rc.total} ready${rc.waitingFor.length && !rc.allReady ? ` · waiting for ${rc.waitingFor.map(esc).join(', ')}` : ''}</p><div class="pilewrap"></div><div class="buttons"><span></span><button class="btn ${meSeat?.readyUp ? '' : 'primary'}" data-act="ready" data-ready="${meSeat?.readyUp ? 0 : 1}" aria-pressed="${!!meSeat?.readyUp}">${meSeat?.readyUp ? '✓ Ready (click to cancel)' : `Ready · ${esc(rc.next)}`}</button></div></div></div>`;
+    if (m) after = roundResultsHTML(m);
   }
   after += `<div class="log" aria-live="polite">${st.log.slice().reverse().map((l) => `<div>${esc(l.msg)}</div>`).join('')}</div><p class="foot">Text from Wikipedia, CC BY-SA. Traits from Wikidata.</p>`;
   return { body, after };
 }
-function resultHeadHTML(st) {
-  const r = st.result; const winners = r.players.filter((p) => p.won > 0);
-  const top = winners[0];
-  return `<div class="score"><h1>${r.uncontested ? `${esc(top?.name)} takes it` : `${winners.map((w) => esc(w.name)).join(' & ')} win${winners.length > 1 ? '' : 's'}`}</h1>
-    <p class="pts"><span>${r.pot}</span> chips</p><p class="line">${r.uncontested ? 'Everyone else folded.' : `${esc(top?.hand)}, ${top?.points} pts`}</p></div>`;
-}
-function resultDetailHTML(st) {
-  const r = st.result;
-  const shown = r.players.filter((p) => p.hand).sort((a, b) => b.points - a.points);
-  return `<div style="padding-top:8px">${shown.map((p) => `<div class="player-res"><h3><span>${esc(p.name)} · ${p.hand}, ${p.points} pts</span><span class="${p.net >= 0 ? 'win' : 'lose'}">${p.net >= 0 ? '+' : ''}${p.net}</span></h3>
-    <div class="mini">${p.cards.map((c) => cardHTML(c, {})).join('')}</div>${matchTable(p, p.cards)}</div>`).join('')}
-    ${r.players.filter((p) => !p.hand).map((p) => `<p class="note">${esc(p.name)}: ${p.folded ? 'folded' : 'mucked'} (${p.net >= 0 ? '+' : ''}${p.net})</p>`).join('')}</div>`;
-}
-
 // ---------- Events ----------
 function emit(ev, data) {
   return new Promise((res) => connect()?.emit(ev, data, (r) => { S.roomError = r?.error ?? null; res(r); if (r?.error) render(); }));
@@ -321,7 +312,7 @@ async function openCard(c) {
 }
 function findCard(id) {
   const g = S.solo; if (S.view === 'solo' && g?.pool) return g.pool.byId.get(id);
-  const st = S.room; return st?.game?.you?.hand.find((c) => c.id === id) ?? st?.result?.players.flatMap((p) => p.cards).find((c) => c.id === id);
+  const m = S.room?.match; return m?.you?.hand.find((c) => c.id === id) ?? m?.last?.results.flatMap((p) => p.cards).find((c) => c.id === id);
 }
 function goLobby(code) {
   S.view = 'lobby'; S.menu = false; S.joinCode = code ?? S.joinCode; connect(); render();
@@ -360,26 +351,21 @@ $root.addEventListener('click', async (e) => {
     case 'leave': await emit('leave'); S.room = null; sessionStorage.removeItem('fd_room'); history.pushState(null, '', '/'); S.view = 'lobby'; return render();
     case 'copylink': await navigator.clipboard?.writeText(el.dataset.link).catch(() => {}); S.copied = true; render(); setTimeout(() => { S.copied = false; render(); }, 1500); return;
     case 'ready': return emit('ready', { ready: el.dataset.ready === '1' });
-    case 'rebuy': return emit('rebuy');
-    case 'fold': case 'check': case 'call': return emit('act', { type: a });
-    case 'raise': return emit('act', { type: 'raise', amount: S.raise });
-    case 'pat': return emit('draw', { discards: [] });
-    case 'mpdraw': return emit('draw', { discards: S.selected });
-  }
-});
-$root.addEventListener('input', (e) => {
-  if (e.target.id === 'rr' || e.target.id === 'rn') {
-    S.raise = +e.target.value;
-    const other = document.getElementById(e.target.id === 'rr' ? 'rn' : 'rr'); if (other) other.value = S.raise;
-    const btn = document.querySelector('[data-act="raise"]'); const max = +e.target.max;
-    if (btn) btn.textContent = S.raise >= max ? 'All in' : S.room.game.currentBet ? `Raise to ${S.raise}` : `Bet ${S.raise}`;
+    case 'mpstand': if (S.busy) return; S.busy = true; render(); return emit('stand').then(() => { S.busy = false; render(); });
+    case 'mpdiscard': {
+      // Send the exact hand we are looking at and the discard step, so the server rejects stale/double submits.
+      const you = S.room?.match?.you; if (!you || S.busy || !S.selected.length) return;
+      S.busy = true; render();
+      const r = await emit('discard', { indices: [...S.selected], expect: you.hand.map((c) => c.id), step: you.step });
+      S.busy = false; if (r?.error) render(); return;
+    }
   }
 });
 $root.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.target.id === 'code' || e.target.id === 'nm')) document.querySelector(`[data-act="${e.target.id === 'code' ? 'join' : 'create'}"]`)?.click(); });
 addEventListener('keydown', (e) => { if (e.key === 'Escape' && (S.modal || S.menu)) { S.modal = null; S.menu = false; render(); } });
 // Countdown bars without full re-renders.
 setInterval(() => {
-  document.querySelectorAll('[data-deadline]').forEach((el) => { el.style.width = `${Math.max(0, Math.min(100, (+el.dataset.deadline - Date.now()) / (S.room?.turnMs ?? 45000) * 100))}%`; });
+  document.querySelectorAll('[data-deadline]').forEach((el) => { el.style.width = `${Math.max(0, Math.min(100, (+el.dataset.deadline - Date.now()) / (S.room?.roundMs ?? 120000) * 100))}%`; });
   document.querySelectorAll('[data-next]').forEach((el) => { el.textContent = `${el.dataset.label ?? 'Next hand in'} ${Math.max(0, Math.ceil((+el.dataset.next - Date.now()) / 1000))}s`; });
 }, 1000);
 addEventListener('popstate', () => { if (!location.pathname.startsWith('/room/')) { S.view = 'home'; render(); } });

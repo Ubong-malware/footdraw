@@ -1,13 +1,13 @@
-# FootDraw — five-card draw (and poker) with Wikipedia football articles
+# FootDraw — five-card draw with Wikipedia football articles
 
 A football-themed take on the format of [wikdraw.org](https://wikdraw.org): cards are Wikipedia articles
 (players, clubs, national teams, tournaments). Cards score points for **traits they share** (nation, club,
-position, World Cup played, award, birthplace, decade…). Rarer traits score more; poker-style hand shapes add a bonus.
+position, World Cup played, award, birthplace, decade…). Rarer traits score more; hand shapes (Pair … Flush) add a bonus.
 
 * **Daily deck** (solo) — the same 15 cards for everyone each day, shuffled per player. Two discard/draw chances.
 * **Random deck** (solo) — 15 cards from the whole pool.
-* **Play with friends** — online rooms for 2–4 players, real poker with chips: ante, three betting rounds,
-  two simultaneous draws, showdown, side pots, rebuys.
+* **Play with friends** — online rooms for 2–4 players: a **10-round match** of normal FootDraw rounds with a
+  league table; the top of the table after round 10 is champion.
 
 ## Run it
 
@@ -21,14 +21,17 @@ Open the site, choose *Play with friends*, create a room and send the invite lin
 Tests (server must be running):
 
 ```bash
-node scripts/sim.mjs http://localhost:8080 4 6   # 4 socket.io bots: joins, 5th rejected, reconnect, chip conservation
-node scripts/ui-test.mjs http://localhost:8080   # Playwright: solo game + 2-browser room, writes screenshots/
+# start the server with READY_COUNTDOWN_MS=300 to make the bot tests fast
+node scripts/sim.mjs http://localhost:8080 4      # 2–4 bots play a full 10-round match: ready-up, kept cards never
+                                                  # change, results = final hands, totals = sum of rounds, table order
+node scripts/sim-leave.mjs http://localhost:8080  # leavers never block; match ends if one player remains
+node scripts/ui-test.mjs http://localhost:8080    # Playwright: solo game + a full 2-browser match, writes screenshots/
 ```
 
 Rebuild the card pool (no keys needed, ~10 minutes):
 
 ```bash
-npm run build-data      # Wikidata SPARQL + Wikipedia API → refine → TheSportsDB crests
+npm run build-data      # Wikidata SPARQL + Wikipedia API → player audit → refine → TheSportsDB crests
 ```
 
 ## Data sources (all keyless)
@@ -39,27 +42,35 @@ npm run build-data      # Wikidata SPARQL + Wikipedia API → refine → TheSpor
 | Wikipedia Action API | Titles, short descriptions, thumbnails, intro extracts (CC BY-SA) |
 | TheSportsDB v1 (public test key `123`) | Club/national-team crests at build time; live “current team / position / stadium” in the card info popup at run time, proxied + cached by the server (`/api/sportsdb/...`). Set `SPORTSDB_KEY` for a premium key. |
 
-## Multiplayer rules
+## Card pool cleanup
 
-1. 2–4 players per room. Everyone starts with **1,000 chips**. The balance is tied to a random token stored in the
-   browser (localStorage) and saved server-side in `data/balances.json`, so it survives reloads, rooms and restarts.
-2. Each hand everyone **antes 10**. The server builds a fresh deck (16 + 10 × players cards, themed so cards share
-   traits), shuffles it with `crypto.randomInt`, and deals 5 private cards each. Other players' cards are never sent to you.
-3. **Betting round 1** → **Draw 1** → **Betting round 2** → **Draw 2** → **Betting round 3** → **Showdown**.
-   Betting starts left of the dealer button (which rotates each hand). No-limit: check, bet, call, raise
-   (minimum raise = previous raise, at least 20), fold, all-in.
-4. Draws are simultaneous: discard 0–5 cards and draw replacements from the shared deck, or stand pat.
-5. **Showdown:** each remaining hand is scored exactly like solo FootDraw: sum of trait points + hand bonus
-   (Flush +150, Four of a Kind +100, Full House +75, Three +30, Two Pair +25, Pair +5). Highest score wins; equal
-   scores tie-break on hand shape, then split. Side pots are built from all-in contribution levels.
-   If everyone else folds, the last player wins without showing.
-6. 45 s per decision: timing out checks (or folds when facing a bet) and stands pat in a draw.
-7. Disconnects keep your seat; reopen the link (same browser) to resume. Leaving mid-hand folds you.
-   A player below the ante can **Rebuy 1,000** between hands.
-8. **Ready-up:** before every hand each seated player presses **Ready**. The server deals only when *all* seated
-   players with chips (minimum 2) are ready, after a 3 s countdown (`READY_COUNTDOWN_MS`) that is cancelled if anyone
-   un-readies or a new player joins. New joiners start not ready, leavers stop blocking, out-of-chips players
-   are skipped until they rebuy, and everyone is reset to not ready when a hand ends.
+`scripts/refine.mjs` removes people whose fame is outside football:
+
+* `scripts/denylist.txt`: manual removals (titles or QIDs, one per line), e.g. Julio Iglesias, Jason Statham, Jo Nesbø.
+* Senior career check: `scripts/audit-players.mjs` sums each player's recorded senior club appearances + caps
+  (Wikidata P54 with P1350) into `scripts/player-audit.json`. Players with fewer than 20 are dropped.
+* Players must have played for at least one club or national team in the pool. Youth and reserve sides don't count.
+
+## Multiplayer: 10-round match
+
+1. 2–4 players per room (room code or `/room/CODE` link). Your seat is tied to a random token in your browser, so
+   reloads and reconnects put you back in the same seat with the same hand.
+2. **Ready-up:** everyone seated presses **Ready** before the match starts and before every round. Nothing starts
+   until all of them (minimum 2) are ready. Then a 3 s countdown runs (`READY_COUNTDOWN_MS`), which is cancelled if anyone
+   un-readies or a new player joins. New joiners start not ready (and spectate a match already running). Leavers stop blocking.
+3. **Each round is one normal FootDraw game.** The server builds a fresh 15-card deck for the round (no card
+   repeats within a match). Every player gets that **same deck**, each in their own shuffle. Players play
+   simultaneously: tap the cards to swap out, up to two discards, or **Stand**.
+4. Kept cards never change: the server only replaces the exact positions you discarded. Each discard request
+   carries the hand you were looking at and the discard step, so stale or double-clicked requests are rejected.
+5. A round ends when everyone has finished. The round timer is 2 minutes (`ROUND_MS`), and anyone still playing auto-stands.
+   The round result shows every player's exact final 5 cards (cards drawn in the last discard are tagged *New*), their
+   trait table and score.
+6. **League table** after every round: position, player, this round's score, rounds won, best round, total points,
+   sorted by total. The highest score wins the round (ties: whoever finished first).
+7. After round 10 (`ROUNDS`) the top of the table is **champion**. If totals are level: most rounds won → best
+   single round → fastest total finishing time → seat order. Players who left can't be champion. If only one player
+   is left, the match ends early.
 
 Trait points: `max(0, round((log2(poolSize / traitCount) − 2) × k² × 1.2))` for `k` cards sharing a trait.
 Traits held by more than 1/8 of the pool (Forward, Born in the 1980s, 2014 FIFA World Cup…) don't count toward the hand shape.
@@ -69,9 +80,9 @@ Traits held by more than 1/8 of the pool (Forward, Born in the 1980s, 2014 FIFA 
 It is one Node process (Express + Socket.IO, in-memory rooms) — run a **single instance**.
 
 * **Render**: push to GitHub → New → Blueprint (uses `render.yaml`) or Web Service with `npm ci` / `node server.js`.
-  Free plan sleeps when idle and loses `data/` on redeploy; add a disk + `DATA_DIR` to keep balances.
-* **Fly.io**: `fly launch --copy-config` (uses `Dockerfile` + `fly.toml`), `fly volumes create footdraw_data --size 1`, `fly deploy`.
-* **Railway**: New project → Deploy from repo; it detects `npm start`. Add a volume at `/data` and `DATA_DIR=/data`.
+  The free plan sleeps when idle, which ends any match in progress.
+* **Fly.io**: `fly launch --copy-config` (uses `Dockerfile` + `fly.toml`), then `fly deploy`.
+* **Railway**: New project → Deploy from repo; it detects `npm start`.
 
 WebSockets work out of the box on all three. Share `https://your-app/room/CODE`.
 
