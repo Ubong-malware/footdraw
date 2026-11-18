@@ -58,10 +58,16 @@ app.get('/api/match/:code/:no', (req, res) => {
   const r = store.matchResults(String(req.params.code).toUpperCase().slice(0, 5), +req.params.no || 0);
   r ? res.json(r) : res.status(404).json({ error: 'Match not found' });
 });
+// Public room info for an invite link (code, game mode, seats), shown before you join.
+app.get('/api/room/:code', (req, res) => {
+  const r = rooms.get(String(req.params.code).toUpperCase().slice(0, 5));
+  r ? res.json({ code: r.code, mode: cleanMode(r.mode), players: r.seats.length, maxPlayers: MAX_PLAYERS }) : res.status(404).json({ error: 'Room not found' });
+});
 app.get('/api/stats', (req, res) => {
   const t = req.get('x-fd-token');
   if (!okToken(t)) return res.status(400).json({ error: 'missing token' });
-  res.json(store.playerStats(t, (id) => CARD.get(id)?.title ?? id));
+  const mode = MODES.includes(req.query.mode) ? req.query.mode : null; // optional filter: ?mode=classic|live
+  res.json(store.playerStats(t, (id) => CARD.get(id)?.title ?? id, mode));
 });
 for (const route of ['/results/:code/:no', '/stats', '/trophies']) app.get(route, (_, res) => res.sendFile(path.join(__dirname, 'public/index.html')));
 // Solo decks are built on the server; the browser only downloads the 15 cards it plays with (plus the trait labels
@@ -98,8 +104,14 @@ const rooms = new Map();
 const newCode = () => { let c; do { c = Array.from({ length: 5 }, () => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[randomInt(32)]).join(''); } while (rooms.has(c)); return c; };
 const publicCard = (id) => { const c = CARD.get(id); return { id, title: c.title, description: c.description, thumbnail: c.thumbnail, extract: c.extract, kind: c.kind }; };
 
-function createRoom(hostToken) {
-  const room = { code: newCode(), host: hostToken, seats: [], match: null, matchNo: 0, log: [], timer: null, roundTimer: null, nextAt: null, created: Date.now() };
+// Game modes, chosen when a room is created (stored with the room and with each match):
+//   classic: what your cards share stays hidden until the reveal (match lines only appear then).
+//   live:    match lines, +N labels and your running total update on the board after every swap. To score the
+//            hand in the browser, your own hand's cards come with their traits (only yours, only in this mode).
+const MODES = ['classic', 'live'];
+const cleanMode = (m) => (MODES.includes(m) ? m : 'classic');
+function createRoom(hostToken, mode) {
+  const room = { code: newCode(), host: hostToken, mode: cleanMode(mode), seats: [], match: null, matchNo: 0, log: [], timer: null, roundTimer: null, nextAt: null, created: Date.now() };
   rooms.set(room.code, room);
   return room;
 }
@@ -175,10 +187,10 @@ function startMatch(room) {
   const players = room.seats.filter((s) => !s.leaving);
   room.matchNo++;
   room.match = {
-    phase: 'roundEnd', round: 0, startedAt: Date.now(), participants: players.map((s) => s.token), usedCards: new Set(), last: null, cur: null,
+    phase: 'roundEnd', round: 0, mode: cleanMode(room.mode), startedAt: Date.now(), participants: players.map((s) => s.token), usedCards: new Set(), last: null, cur: null,
     table: Object.fromEntries(players.map((s) => [s.token, { name: s.name, total: 0, rounds: [], roundsWon: 0, best: 0, finishMs: 0, left: false }])),
   };
-  say(room, `Match ${room.matchNo} begins: ${players.map((s) => s.name).join(', ')} · ${ROUNDS} rounds.`);
+  say(room, `Match ${room.matchNo} begins (${room.match.mode === 'live' ? 'Live Lines' : 'Classic'}): ${players.map((s) => s.name).join(', ')} · ${ROUNDS} rounds.`);
   startRound(room);
 }
 
@@ -297,12 +309,20 @@ function broadcast(room) {
   save(room); // every state change is written to SQLite before anyone sees it
   for (const s of room.seats) if (s.socketId) io.to(s.socketId).emit('state', viewFor(room, s.token));
 }
+const liveMode = (room) => cleanMode(room.match?.mode ?? room.mode) === 'live';
+const liveCard = (id) => ({ ...publicCard(id), traits: CARD.get(id).traits });
+// Trait labels + pool counts for just these cards (enough for scoreHand in the browser; same numbers as the server).
+function handMeta(ids) {
+  const traits = {};
+  for (const id of ids) for (const k of CARD.get(id).traits) traits[k] = META.traits[k];
+  return { size: META.size, traits };
+}
 function viewFor(room, token) {
   const m = room.match;
   const cur = m?.phase === 'playing' ? m.cur : null;
   const mine = cur?.players[token];
   return {
-    code: room.code, host: room.host === token, maxPlayers: MAX_PLAYERS, rounds: ROUNDS, roundMs: ROUND_MS, nextAt: room.nextAt,
+    code: room.code, mode: cleanMode(room.mode), host: room.host === token, maxPlayers: MAX_PLAYERS, rounds: ROUNDS, roundMs: ROUND_MS, nextAt: room.nextAt,
     readyCheck: m?.phase === 'playing' ? null : readyInfo(room),
     seats: room.seats.map((s) => {
       const p = cur?.players[s.token]; const row = m?.table[s.token];
@@ -314,10 +334,10 @@ function viewFor(room, token) {
       };
     }),
     match: m && {
-      no: room.matchNo, phase: m.phase, round: m.round, champion: m.champion ?? null, championPts: m.championPts ?? null, championWhy: m.championWhy ?? null,
+      no: room.matchNo, mode: cleanMode(m.mode ?? room.mode), phase: m.phase, round: m.round, champion: m.champion ?? null, championPts: m.championPts ?? null, championWhy: m.championWhy ?? null,
       deadline: cur?.deadline ?? null, table: standings(m), last: m.last, lastYou: m.lastTokens ? m.lastTokens.indexOf(token) : -1, youPlay: m.participants.includes(token),
       waitingFor: cur ? Object.keys(cur.players).filter((t) => !cur.players[t].done && !m.table[t].left).map((t) => m.table[t].name) : [],
-      you: mine && { hand: mine.hand.map(publicCard), step: mine.keeps.length, discardsLeft: 2 - mine.keeps.length, deckLeft: cur.deck.length - mine.pos, deckSize: cur.deck.length, done: mine.done, result: mine.done ? mine.result : null, lastNew: mine.lastNew },
+      you: mine && { hand: mine.hand.map(liveMode(room) ? liveCard : publicCard), meta: liveMode(room) ? handMeta(mine.hand) : undefined, step: mine.keeps.length, discardsLeft: 2 - mine.keeps.length, deckLeft: cur.deck.length - mine.pos, deckSize: cur.deck.length, done: mine.done, result: mine.done ? mine.result : null, lastNew: mine.lastNew },
     },
     log: room.log.slice(-25),
   };
@@ -351,7 +371,7 @@ io.on('connection', (socket) => {
     if (roomCode && roomCode !== r.code) leave();
     s.socketId = socket.id; roomCode = r.code; socket.join(r.code);
     checkReady(r); // a newcomer (not ready) cancels any pending countdown
-    ack(cb, { ok: true, code: r.code });
+    ack(cb, { ok: true, code: r.code, mode: cleanMode(r.mode) });
     broadcast(r);
   }
   function leave() {
@@ -380,7 +400,7 @@ io.on('connection', (socket) => {
     broadcast(r);
   }
 
-  socket.on('create', ({ name } = {}, cb) => { const r = createRoom(token); join(r.code, cleanName(name), cb); });
+  socket.on('create', ({ name, mode } = {}, cb) => { const r = createRoom(token, mode); join(r.code, cleanName(name), cb); });
   socket.on('join', ({ code, name } = {}, cb) => join(code, cleanName(name), cb));
   socket.on('leave', (_, cb) => { leave(); ack(cb, { ok: true }); });
   socket.on('ready', ({ ready } = {}, cb) => {

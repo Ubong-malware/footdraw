@@ -21,13 +21,21 @@ if (!token) { token = [...crypto.getRandomValues(new Uint8Array(16))].map((b) =>
 const MODES = [
   { mode: 'daily', name: 'Daily deck', blurb: "Today's 15 cards." },
   { mode: 'random', name: 'Random deck', blurb: '15 cards from the entire football pool.' },
-  { mode: 'friends', name: 'Play with friends', blurb: '10-round league for 2–6 players.' },
+  { mode: 'friends', name: 'Play with friends', blurb: '10-round league for 2–6 players. Classic or Live Lines.' },
 ];
+
+// Online game modes (picked when a room is created; the server stores it with the room and each match).
+const GAME_MODES = {
+  classic: { name: 'Classic', blurb: 'What your cards share stays hidden. Match lines appear at the reveal.' },
+  live: { name: 'Live Lines', blurb: 'Match lines, +points and your running total update on the board after every swap.' },
+};
+const modeName = (m) => GAME_MODES[m]?.name ?? GAME_MODES.classic.name;
+const modeChip = (m) => `<span class="modechip ${m === 'live' ? 'live' : 'classic'}" data-mode-chip="${m === 'live' ? 'live' : 'classic'}">${modeName(m)}</span>`;
 
 const S = {
   view: 'home', menu: false, modal: null, // modal: {type:'help'} | {type:'card', card}
   solo: null, // solo game
-  room: null, roomError: null, selected: [], busy: false, name: localStorage.getItem('fd_name') ?? '',
+  room: null, roomError: null, selected: [], busy: false, newMode: 'classic', invite: null, statsMode: null, name: localStorage.getItem('fd_name') ?? '',
 };
 
 // ---------- Data ----------
@@ -70,7 +78,7 @@ const pileHTML = (n) => {
 const discardsHTML = (left) => `<div class="discards" role="img" aria-label="${left} of 2 discards left"><span class="lbl">Swaps left</span>${[0, 1].map((i) => `<span class="j ${i >= left ? 'used' : ''}"></span>`).join('')}</div>`;
 // The tactics board: cards laid out like a formation, with thin lines between matching cards (drawn by drawLinks
 // after each render from data-links = [{c:[card idx], p:points, s:'on'|'past'|'done'}]).
-const boardHTML = (inner, links) => `<div class="board"${links ? ` data-links="${esc(JSON.stringify(links))}"` : ''}><svg class="links" aria-hidden="true"></svg><div class="grid formation">${inner}</div><svg class="links labels" aria-hidden="true"></svg></div>`;
+const boardHTML = (inner, links, { live = false } = {}) => `<div class="board${live ? ' live' : ''}"${links ? ` data-links="${esc(JSON.stringify(links))}"` : ''}><svg class="links" aria-hidden="true"></svg><div class="grid formation">${inner}</div><svg class="links labels" aria-hidden="true"></svg></div>`;
 const matchTable = (r, cardsByIdx) => r.matches.length ? `<table class="wt"><thead><tr><th scope="col">In common</th><th scope="col">Cards</th><th scope="col">Points</th></tr></thead><tbody>
   ${r.matches.map((m) => `<tr><td><strong>${esc(m.label)}</strong></td><td>${m.cards.map((i) => esc(cardName(cardsByIdx[i]))).join(', ')}</td><td>+${m.points}</td></tr>`).join('')}
   ${BONUS[r.hand] > 0 ? `<tr><td colspan="2"><em>${r.hand} bonus</em></td><td>+${BONUS[r.hand]}</td></tr>` : ''}</tbody></table>` : '<p class="muted" style="margin-bottom:16px">Nothing in this hand had anything in common.</p>';
@@ -123,16 +131,19 @@ function modalHTML() {
       <li>Once everyone is locked in, all players see the reveal at the same moment: lines connect your matching cards as the points tally up, then everyone's hands and the table appear (or tap <strong>Skip to results</strong>).</li>
       <li>Your round score is added to the <strong>league table</strong>. Highest score wins the round (ties: whoever finished first).</li>
       <li>After round 10 the top of the table is champion. Level on points? Then most rounds won, then best single round, then fastest total finishing time.</li></ul>
-    <h3>Modes</h3><ul><li><strong>Daily deck</strong>: the day's 15 cards are the same for everyone, shuffled uniquely for each player.</li><li><strong>Random deck</strong>: 15 cards from the entire pool.</li><li><strong>Play with friends</strong>: a 10-round league match against up to 5 friends. Matches are saved, so a dropped connection or server restart doesn't end them. See <strong>Multiplayer stats</strong> and the <strong>Trophy room</strong> in the menu.</li></ul></div>`);
+    <h3>Modes</h3><ul><li><strong>Daily deck</strong>: the day's 15 cards are the same for everyone, shuffled uniquely for each player.</li><li><strong>Random deck</strong>: 15 cards from the entire pool.</li><li><strong>Play with friends</strong>: a 10-round league match against up to 5 friends, in one of two game modes chosen when the room is created. <strong>Classic</strong>: what your cards share stays hidden until the reveal. <strong>Live Lines</strong>: thin lines join your matching cards while you play, with +points labels and your running total, and they update after every swap (cards marked Swap out still count until you swap). Invite links always join the room's mode. Matches are saved, so a dropped connection or server restart doesn't end them. See <strong>Multiplayer stats</strong> and the <strong>Trophy room</strong> in the menu.</li></ul></div>`);
 }
 
 // ---------- Match lines on the board ----------
 // Thin white lines join the cards of each match (edge to edge, chained in board order) with a small "+N" label.
-let lastLinks = '';
+let lastLinks = '', lastLive = new Set();
 function drawLinks() {
   document.querySelectorAll('.board[data-links]').forEach((b) => {
     // Re-renders of the same scene (socket updates, resizes) keep the lines still instead of drawing them in again.
-    const still = b.dataset.links === lastLinks ? ' still' : ''; lastLinks = b.dataset.links;
+    const same = b.dataset.links === lastLinks; lastLinks = b.dataset.links;
+    const live = b.classList.contains('live'), seenLive = lastLive; lastLive = new Set();
+    // Live lines: only matches that are new since the last drawing fade in; ones that stayed put don't flicker.
+    const stillFor = (l) => { if (!live) return same ? ' still' : ''; const k = `${l.c.join('.')}`; lastLive.add(k); return same || seenLive.has(k) ? ' still' : ''; };
     const [under, over] = b.querySelectorAll('svg.links'); if (!under || !over) return;
     let links; try { links = JSON.parse(b.dataset.links); } catch { return; }
     const br = b.getBoundingClientRect(); if (!br.width) return;
@@ -160,25 +171,29 @@ function drawLinks() {
     // matches on the same pair of cards share one summed label so the board stays readable.
     const labels = new Map(); let lines = '';
     for (const l of links) {
+      const still = stillFor(l);
       const idx = [...l.c].filter((i) => boxes[i]).sort((a, z) => (boxes[a].x - boxes[z].x) || (boxes[a].y - boxes[z].y));
       if (idx.length < 2) continue;
       const segs = idx.slice(1).map((i, k) => ({ ...route(idx[k], i), key: `${idx[k]}-${i}` }));
       for (const { p1, p2, C } of segs) lines += `<g class="ln ${l.s}${still}"><path d="M${f(p1[0])} ${f(p1[1])}Q${f(C[0])} ${f(C[1])} ${f(p2[0])} ${f(p2[1])}" pathLength="1"/><circle cx="${f(p1[0])}" cy="${f(p1[1])}" r="3"/><circle cx="${f(p2[0])}" cy="${f(p2[1])}" r="3"/></g>`;
       if (l.s === 'past') continue;
       const sg = segs[Math.floor((segs.length - 1) / 2)];
-      const key = l.s === 'done' ? sg.key : `on:${sg.key}`;
+      const key = l.s === 'done' ? sg.key : `${l.s}:${sg.key}`;
       const prev = labels.get(key);
       // Put the label on the visible part of the line, never on top of a card.
       const P = { x: sg.p1[0], y: sg.p1[1] }, Q = { x: sg.p2[0], y: sg.p2[1] };
       const [x, y] = [0.5, 0.35, 0.65, 0.22, 0.78, 0.1, 0.9].map((t) => quad(P, sg.C, Q, t)).find(([px, py]) => !boxes.some((B) => inBox(B, px, py, 8))) ?? quad(P, sg.C, Q, 0.5);
-      labels.set(key, { s: l.s, p: (prev?.p ?? 0) + l.p, x, y });
+      labels.set(key, { s: l.s, still, p: (prev?.p ?? 0) + l.p, x, y });
     }
     under.innerHTML = lines;
-    over.innerHTML = [...labels.values()].map((L) => { const txt = `+${L.p}`, w = 14 + txt.length * 8; return `<g class="lb ${L.s}${still}"><rect x="${f(L.x - w / 2)}" y="${f(L.y - 11)}" width="${w}" height="22" rx="11"/><text x="${f(L.x)}" y="${f(L.y + 4.5)}" text-anchor="middle">${txt}</text></g>`; }).join('');
+    over.innerHTML = [...labels.values()].map((L) => { const txt = `+${L.p}`, w = 14 + txt.length * 8; return `<g class="lb ${L.s}${L.still}"><rect x="${f(L.x - w / 2)}" y="${f(L.y - 11)}" width="${w}" height="22" rx="11"/><text x="${f(L.x)}" y="${f(L.y + 4.5)}" text-anchor="middle">${txt}</text></g>`; }).join('');
   });
 }
 let linkRaf = 0;
 addEventListener('resize', () => { cancelAnimationFrame(linkRaf); linkRaf = requestAnimationFrame(drawLinks); });
+// New cards slide in (.fresh); measure the live board again once they've landed so the lines sit on the cards.
+let settleTimer = 0;
+function settleLinks() { clearTimeout(settleTimer); if (document.querySelector('.board.live .slot.fresh')) settleTimer = setTimeout(drawLinks, 520); }
 document.fonts?.ready.then(() => drawLinks());
 
 // ---------- Views ----------
@@ -199,7 +214,7 @@ function render() {
   const banner = S.view === 'room' && S.conn ? `<div class="connbar" role="status">${S.conn === 'restarting' ? 'The server is restarting. Your match is saved, reconnecting…' : 'Connection lost. Reconnecting…'}</div>` : '';
   window.__fd && window.__fd.renders++;
   $root.innerHTML = `${banner}<main class="main view-${S.view}"><div class="screen">${topbar()}${body}</div>${after}</main>${modalHTML()}`;
-  drawLinks();
+  drawLinks(); settleLinks();
   if (active && document.getElementById(active)) document.getElementById(active).focus();
   animateCount();
 }
@@ -228,7 +243,7 @@ const fmtDate = (t) => new Date(t).toLocaleDateString(undefined, { day: 'numeric
 const resultsLink = (code, no, text) => `<a href="/results/${esc(code)}/${+no}" data-act="results" data-code="${esc(code)}" data-no="${+no}">${text}</a>`;
 async function loadMpStats() {
   S.mp = { loading: true }; render();
-  try { const r = await fetch('/api/stats', { headers: { 'x-fd-token': token } }); S.mp = r.ok ? { data: await r.json() } : { error: 'Could not load stats.' }; }
+  try { const r = await fetch(`/api/stats${S.statsMode && S.view === 'mpstats' ? `?mode=${S.statsMode}` : ''}`, { headers: { 'x-fd-token': token } }); S.mp = r.ok ? { data: await r.json() } : { error: 'Could not load stats.' }; }
   catch { S.mp = { error: 'Could not load stats.' }; }
   if (S.view === 'mpstats' || S.view === 'trophies') render();
 }
@@ -248,12 +263,13 @@ function mpStatsHTML() {
   if (mp.loading) return '<p class="note">Loading…</p>';
   if (mp.error) return `<p class="err">${esc(mp.error)}</p>`;
   const d = mp.data;
-  if (!d?.matchesPlayed && !d?.roundsPlayed) return `${mpNav('mpstats')}<p class="prose">No finished multiplayer matches yet for this browser. Play a 10-round match with friends and your record will appear here.</p>`;
+  const filter = `<p class="modefilter" role="group" aria-label="Filter by game mode"><span>Mode:</span>${[['', 'All'], ['classic', 'Classic'], ['live', 'Live Lines']].map(([k, t]) => `<button type="button" class="fbtn${(S.statsMode ?? '') === k ? ' on' : ''}" aria-pressed="${(S.statsMode ?? '') === k}" data-act="statsmode" data-mode="${k}">${t}${d?.byMode ? ` <small>${k ? d.byMode[k].played : d.byMode.classic.played + d.byMode.live.played}</small>` : ''}</button>`).join('')}</p>`;
+  if (!d?.matchesPlayed && !d?.roundsPlayed) return `${mpNav('mpstats')}${filter}<p class="prose">No finished multiplayer matches yet for this browser. Play a 10-round match with friends and your record will appear here.</p>`;
   const kv = (k, v) => `<tr><th scope="row">${k}</th><td>${v}</td></tr>`;
   const br = d.bestRound;
-  return `${mpNav('mpstats')}<div class="mpstats">
+  return `${mpNav('mpstats')}${filter}<div class="mpstats">
     <table class="infobox"><caption>${esc(d.name ?? 'You')}</caption><tbody>
-      ${kv('Matches played', d.matchesPlayed)}${kv('League titles', d.titles)}${kv('Win %', `${d.winPct}%`)}
+      ${kv('Matches played', d.matchesPlayed)}${kv('League titles', d.titles)}${d.byMode ? kv('By mode', `Classic ${d.byMode.classic.played} (${d.byMode.classic.titles} won)<br>Live Lines ${d.byMode.live.played} (${d.byMode.live.titles} won)`) : ''}${kv('Win %', `${d.winPct}%`)}
       ${kv('Rounds played', d.roundsPlayed)}${kv('Rounds won', d.roundsWon)}${kv('Average round', `${d.avgRound} pts`)}
       ${kv('Best round', br ? `${br.points} pts<br><small>${esc(br.hand)}</small>` : '–')}
       ${kv('Highest match total', d.highestTotal ? `${d.highestTotal.total} pts` : '–')}${kv('Average finish', d.avgPos ? ord(Math.round(d.avgPos)) + ` <small>(${d.avgPos})</small>` : '–')}
@@ -262,7 +278,7 @@ function mpStatsHTML() {
     <section class="section"><h2>Most-used cards</h2><table class="wt"><thead><tr><th scope="col">Card</th><th scope="col">Final hands</th></tr></thead><tbody>${d.topCards.map((c) => `<tr><td><a href="${wikiUrl(c.name)}" target="_blank" rel="noopener noreferrer">${esc(cardName({ title: c.name }))}</a></td><td>${c.count}</td></tr>`).join('')}</tbody></table></section>
     <section class="section"><h2>Most-scored traits</h2><table class="wt"><thead><tr><th scope="col">In common</th><th scope="col">Rounds</th></tr></thead><tbody>${d.topTraits.map((c) => `<tr><td>${esc(c.name)}</td><td>${c.count}</td></tr>`).join('')}</tbody></table></section>
     <section class="section"><h2>Hands</h2><table class="wt"><thead><tr><th scope="col">Hand</th><th scope="col">Count</th></tr></thead><tbody>${HANDS.map((h) => `<tr><td>${h}</td><td>${d.hands[h] ?? 0}</td></tr>`).join('')}</tbody></table></section>
-    <section class="section"><h2>Recent matches</h2>${d.history.length ? `<table class="wt"><thead><tr><th scope="col">Date</th><th scope="col">Opponents</th><th scope="col">Finish</th><th scope="col">Points</th><th scope="col">Final table</th></tr></thead><tbody>${d.history.map((h) => `<tr><td>${fmtDate(h.at)}</td><td>${h.opponents.map(esc).join(', ')}</td><td>${h.won ? `${ICON_CUP} ` : ''}${ord(h.pos)} of ${h.players}</td><td>${h.total}</td><td>${resultsLink(h.code, h.no, 'View')}</td></tr>`).join('')}</tbody></table>` : '<p class="note">No finished matches yet.</p>'}</section>
+    <section class="section"><h2>Recent matches</h2>${d.history.length ? `<table class="wt"><thead><tr><th scope="col">Date</th><th scope="col">Mode</th><th scope="col">Opponents</th><th scope="col">Finish</th><th scope="col">Points</th><th scope="col">Final table</th></tr></thead><tbody>${d.history.map((h) => `<tr><td>${fmtDate(h.at)}</td><td>${modeName(h.mode)}</td><td>${h.opponents.map(esc).join(', ')}</td><td>${h.won ? `${ICON_CUP} ` : ''}${ord(h.pos)} of ${h.players}</td><td>${h.total}</td><td>${resultsLink(h.code, h.no, 'View')}</td></tr>`).join('')}</tbody></table>` : '<p class="note">No finished matches yet.</p>'}</section>
     <p class="note">Stats are tied to this browser (and the name you played under). Rounds count once a round has ended.</p></div>`;
 }
 function trophiesHTML() {
@@ -272,7 +288,7 @@ function trophiesHTML() {
   const d = mp.data ?? { trophies: [], badges: [] };
   return `${mpNav('trophies')}<p class="prose">Every league title ${esc(d.name ?? 'you')} won${d.trophies.length ? ` · <b>${d.trophies.length}</b> in the cabinet` : ''}.</p>
     <div class="trophies">${d.trophies.length ? d.trophies.map((t) => `<div class="trophy${t.perfect ? ' perfect' : ''}"><div class="cup">${ICON_CUP}</div><div class="tt">League champion</div>
-      <div class="td">${fmtDate(t.at)} · Room ${esc(t.code)}</div><div class="tp"><b>${t.total}</b> pts</div>
+      <div class="td">${fmtDate(t.at)} · Room ${esc(t.code)} · ${modeName(t.mode)}</div><div class="tp"><b>${t.total}</b> pts</div>
       <div class="td">${t.runnerUp ? `won by ${t.margin} pts over ${esc(t.runnerUp)}` : 'unopposed'}</div><div class="td">vs ${t.opponents.map(esc).join(', ') || '—'}</div>
       ${t.perfect ? '<div class="tag2">Perfect match</div>' : ''}<div class="td">${resultsLink(t.code, t.no, 'Final table')}</div></div>`).join('') : '<p class="note">No titles yet. Win a 10-round match to lift your first trophy.</p>'}</div>
     <section class="section"><h2>Milestones</h2><ul class="badges">${d.badges.map((b) => `<li class="${b.earned ? 'earned' : 'locked'}" title="${esc(b.desc)}"><span class="bi" aria-hidden="true">${b.earned ? '✓' : '–'}</span><b>${esc(b.label)}</b><small>${esc(b.desc)}</small></li>`).join('')}</ul></section>`;
@@ -282,7 +298,7 @@ function savedResultsHTML() {
   if (sv.loading) return '<p class="note">Loading…</p>';
   if (sv.error || !sv.data) return `<p class="err">${esc(sv.error ?? 'Not found')}</p>`;
   const d = sv.data; const n = Math.max(...d.rows.map((r) => r.rounds.length), 0);
-  return `<p class="prose">Room <b>${esc(d.code)}</b>, match ${d.no} · ${fmtDate(d.updatedAt)} · ${d.phase === 'final' ? `<b>${esc(d.champion)}</b> won the title with ${d.championPts} pts${d.championWhy ? ` (${esc(d.championWhy)})` : ''}` : `in progress, round ${d.round}`}.</p>
+  return `<p class="prose">Room <b>${esc(d.code)}</b>, match ${d.no} · ${modeChip(d.mode)} · ${fmtDate(d.updatedAt)} · ${d.phase === 'final' ? `<b>${esc(d.champion)}</b> won the title with ${d.championPts} pts${d.championWhy ? ` (${esc(d.championWhy)})` : ''}` : `in progress, round ${d.round}`}.</p>
     <div class="scroll"><table class="wt league full"><thead><tr><th scope="col">Pos</th><th scope="col">Player</th>${Array.from({ length: n }, (_, i) => `<th scope="col">R${i + 1}</th>`).join('')}<th scope="col">Won</th><th scope="col">Total</th></tr></thead><tbody>
     ${d.rows.map((r) => `<tr class="${r.pos === 1 ? 'lead' : ''}"><td>${d.phase === 'final' && r.pos === 1 ? ICON_CUP : ord(r.pos)}</td><td>${esc(r.name)}${r.left ? ' <span class="muted">(left)</span>' : ''}</td>${Array.from({ length: n }, (_, i) => `<td>${r.rounds[i] ?? ''}</td>`).join('')}<td>${r.roundsWon}</td><td><strong>${r.total}</strong></td></tr>`).join('')}</tbody></table></div>
     ${mpNav('')}`;
@@ -392,6 +408,19 @@ function revealLine(r, scene, doneText) {
   const cur = scene.done || scene.bonus ? null : r.matches[scene.matches - 1];
   return { cur, line: scene.done ? doneText : scene.bonus ? `${r.hand} bonus <strong>+${BONUS[r.hand]}</strong>` : cur ? `${esc(cur.label)} <strong>+${cur.points}</strong>` : '' };
 }
+// ===== Live Lines mode =====
+// While you play, your current hand is scored in the browser with the same scoreHand() the reveal and the server use,
+// so the live total always equals the final score. Cards marked "Swap out" still count until the swap happens; their
+// lines are dimmed. After you lock in, the lines freeze on your final hand.
+function liveScore(cards, meta) {
+  if (!meta || cards.some((c) => !Array.isArray(c.traits))) return null;
+  return scoreHand(cards, meta);
+}
+function liveLinks(r, sel = [], frozen = false) {
+  return r.matches.map((m) => ({ c: m.cards, p: m.points, s: frozen ? 'live frozen' : m.cards.some((i) => sel.includes(i)) ? 'live dim' : 'live' }));
+}
+const liveTotalHTML = (r, { frozen = false } = {}) => `<p class="livetot${frozen ? ' frozen' : ''}" role="status" aria-live="polite" data-pts="${r.points}" data-hand="${esc(r.hand)}" title="Live score of your current hand"><span class="lt-hand">${r.hand}</span><span class="lt-pts"><b>${r.points}</b> pts</span>${frozen ? '<span class="lt-lock">final</span>' : ''}</p>`;
+
 function soloHTML() {
   const g = S.solo;
   if (!g || g.loading) return { body: '<p class="center-msg">Dealing…</p>', after: '' };
@@ -467,11 +496,15 @@ function revealHTML(st) {
     <div class="below"><div class="bar"><p class="problem muted">Round ${m.last.round} of ${st.rounds} · results next</p><div class="pilewrap"></div><div class="buttons one"><button class="btn" data-act="skipreveal">Skip to results</button></div></div></div>`;
 }
 function lobbyHTML() {
+  const inv = S.invite && S.invite.code === (S.joinCode ?? '').toUpperCase() ? S.invite : null;
+  const picker = `<fieldset class="modepick" role="radiogroup" aria-label="Game mode"><legend>Game mode</legend>${Object.entries(GAME_MODES).map(([k, g]) => `<button type="button" class="modeopt${S.newMode === k ? ' on' : ''}" role="radio" aria-checked="${S.newMode === k}" data-act="newmode" data-mode="${k}"><strong>${g.name}</strong><span>${g.blurb}</span></button>`).join('')}</fieldset>`;
   return pageHead('Play with friends') + `<div class="form">
     <p class="prose">A 10-round FootDraw match for 2–6 players. Everyone plays the same deck each round; points add up in a league table and the top of the table after round 10 is champion. Create a room and send the link, or join with a code.</p>
+    ${inv ? `<p class="invite" role="status">You're invited to room <b>${esc(inv.code)}</b> · ${modeChip(inv.mode)} · ${inv.players}/${inv.maxPlayers} players. ${esc(GAME_MODES[inv.mode]?.blurb ?? '')}</p>` : ''}
     <label>Your name<input id="nm" maxlength="20" autocomplete="nickname" value="${esc(S.name)}" placeholder="e.g. Pelé"></label>
-    <button class="btn primary" data-act="create">Create a room</button>
-    <div class="row"><input id="code" maxlength="5" placeholder="Room code" style="text-transform:uppercase" value="${esc(S.joinCode ?? '')}"><button class="btn" data-act="join">Join room</button></div>
+    ${inv ? '' : picker}
+    <button class="btn ${inv ? '' : 'primary'}" data-act="create">Create a ${modeName(S.newMode)} room</button>
+    <div class="row"><input id="code" maxlength="5" placeholder="Room code" style="text-transform:uppercase" value="${esc(S.joinCode ?? '')}"><button class="btn ${inv ? 'primary' : ''}" data-act="join">Join room</button></div>
     ${S.roomError ? `<p class="err" role="alert">${esc(S.roomError)}</p>` : ''}</div>`;
 }
 const ord = (n) => n + ({ 1: 'st', 2: 'nd', 3: 'rd' }[n % 100 > 10 && n % 100 < 14 ? 0 : n % 10] ?? 'th');
@@ -517,7 +550,7 @@ function roomHTML() {
     return `<div class="seat ${!playing && s.readyUp ? 'is-ready' : ''} ${playing && s.lockedIn ? 'is-ready' : ''}" title="${!playing ? (s.readyUp ? `${esc(s.name)} is ready` : `Waiting for ${esc(s.name)} to ready up`) : s.lockedIn ? `${esc(s.name)} is locked in` : s.status === 'Spectating' ? `${esc(s.name)} is spectating` : `${esc(s.name)} is still playing`}"><div class="nm">${esc(s.name)}${s.isYou ? ' (you)' : ''}${s.isHost ? ' ★' : ''}</div><div class="ch">${s.total != null && !S.reveal ? `${s.total} pts` : '&nbsp;'}</div><div class="st">${status}${s.connected ? '' : ' <span class="off">· offline</span>'}</div></div>`;
   }).join('');
   const invite = `${location.origin}/room/${st.code}`;
-  let body = `<div class="roomhead"><span>Room</span><span class="code">${st.code}</span><button class="btn small" data-act="copylink" data-link="${esc(invite)}">${S.copied ? 'Link copied' : 'Copy invite link'}</button><button class="btn small" data-act="leave">Leave</button>${S.roomError ? `<span class="err">${esc(S.roomError)}</span>` : ''}</div>
+  let body = `<div class="roomhead"><span>Room</span><span class="code">${st.code}</span>${modeChip(st.mode)}<button class="btn small" data-act="copylink" data-link="${esc(invite)}">${S.copied ? 'Link copied' : 'Copy invite link'}</button><button class="btn small" data-act="leave">Leave</button>${S.roomError ? `<span class="err">${esc(S.roomError)}</span>` : ''}</div>
     <div class="seats seats-${nSeats}">${seatsHTML}</div>`;
   let after = '';
   if (playing) {
@@ -527,12 +560,13 @@ function roomHTML() {
       body += `<div class="above"><p class="center-msg">Round ${m.round} in progress. You'll play in the next match.</p></div>`;
     } else if (!you.done) {
       const sel = S.selected;
-      body += `<div class="stage"><div class="stage-main"><div class="above"><div class="boardhead">${discardsHTML(you.discardsLeft)}<p class="hint">Tap cards to <strong>swap out</strong>. Cards you keep never change.</p></div></div>
-        ${boardHTML(you.hand.map((c, i) => cardHTML(c, { idx: i, toggle: true, discarded: sel.includes(i), info: true, badge: !sel.includes(i) && you.lastNew.includes(i) ? 'New' : null })).join(''))}</div>${side}</div>
+      const lr = st.mode === 'live' ? liveScore(you.hand, you.meta) : null;
+      body += `<div class="stage"><div class="stage-main"><div class="above"><div class="boardhead">${discardsHTML(you.discardsLeft)}${lr ? liveTotalHTML(lr) : ''}<p class="hint">Tap cards to <strong>swap out</strong>. Cards you keep never change.</p></div></div>
+        ${boardHTML(you.hand.map((c, i) => cardHTML(c, { idx: i, toggle: true, discarded: sel.includes(i), info: true, badge: !sel.includes(i) && you.lastNew.includes(i) ? 'New' : null })).join(''), lr ? liveLinks(lr, sel) : null, { live: !!lr })}</div>${side}</div>
         <div class="below"><div class="bar"><p class="problem">${sel.length ? `Swap ${sel.length}, keep ${5 - sel.length}` : '&nbsp;'}</p><div class="pilewrap">${pileHTML(you.deckLeft)}</div><div class="buttons"><button class="btn" data-act="mpdiscard" ${sel.length && !S.busy ? '' : 'disabled'}>${sel.length ? `Swap ${sel.length}` : 'Swap'}</button><button class="btn primary" data-act="mpstand" ${S.busy ? 'disabled' : ''}>Lock in</button></div></div></div>`;
     } else {
       body += `<div class="stage"><div class="stage-main"><div class="above"><div class="score locked"><h1>Locked in ✓</h1><p class="line lockwait" role="status">Locked in, waiting for: ${m.waitingFor.map(esc).join(', ')}</p><p class="pb">Scores are revealed for everyone at the same time when the last player locks in.</p></div></div>
-        ${boardHTML(you.hand.map((c, i) => cardHTML(c, { badge: you.lastNew.includes(i) ? 'New' : null })).join(''))}</div>${side}</div>
+        ${(() => { const fr = st.mode === 'live' ? (you.result ?? liveScore(you.hand, you.meta)) : null; return boardHTML(you.hand.map((c, i) => cardHTML(c, { badge: you.lastNew.includes(i) ? 'New' : null })).join(''), fr ? liveLinks(fr, [], true) : null, { live: !!fr }) + (fr ? `<div class="frozenrow">${liveTotalHTML(fr, { frozen: true })}</div>` : ''); })()}</div>${side}</div>
         <div class="below"><div class="bar"><p class="problem muted">Round ends when everyone is locked in.</p><div class="pilewrap">${pileHTML(you.deckLeft)}</div><div class="buttons one"><button class="btn primary" disabled>Locked in ✓</button></div></div></div>`;
     }
   } else if (S.reveal && m?.last && S.reveal.key === `${st.code}:${m.no}:${m.last.round}`) {
@@ -568,6 +602,12 @@ function findCard(id) {
 }
 function goLobby(code) {
   S.view = 'lobby'; S.menu = false; S.joinCode = code ?? S.joinCode; connect(); render();
+  if (code) loadInvite(code);
+}
+// Invite links: show the room's game mode before you join (you always join in the room's mode).
+async function loadInvite(code) {
+  try { const r = await fetch(`/api/room/${encodeURIComponent(code)}`); S.invite = r.ok ? await r.json() : null; } catch { S.invite = null; }
+  if (S.view === 'lobby') render();
 }
 $root.addEventListener('click', async (e) => {
   const el = e.target.closest('[data-act]');
@@ -598,12 +638,18 @@ $root.addEventListener('click', async (e) => {
       if (!S.name) { S.roomError = 'Pick a name first.'; return render(); }
       const code = (document.getElementById('code')?.value ?? '').trim().toUpperCase();
       if (a === 'join' && !code) { S.roomError = 'Enter a room code.'; return render(); }
-      const r = await emit(a, { name: S.name, code });
+      const r = await emit(a, { name: S.name, code, mode: S.newMode });
       if (r?.ok) { S.view = 'room'; S.roomError = null; sessionStorage.setItem('fd_room', r.code); history.pushState(null, '', `/room/${r.code}`); render(); }
       return;
     }
     case 'leave': await emit('leave'); S.room = null; sessionStorage.removeItem('fd_room'); history.pushState(null, '', '/'); S.view = 'lobby'; return render();
     case 'copylink': await navigator.clipboard?.writeText(el.dataset.link).catch(() => {}); S.copied = true; render(); setTimeout(() => { S.copied = false; render(); }, 1500); return;
+    case 'newmode': { // keep what's typed in the form across the re-render
+      const nm = document.getElementById('nm'), cd = document.getElementById('code');
+      if (nm) S.name = nm.value; if (cd) S.joinCode = cd.value;
+      S.newMode = el.dataset.mode === 'live' ? 'live' : 'classic'; return render();
+    }
+    case 'statsmode': e.preventDefault(); S.statsMode = el.dataset.mode || null; return loadMpStats();
     case 'ready': return emit('ready', { ready: el.dataset.ready === '1' });
     case 'skipreveal': S.reveal = null; render(); return;
     case 'mpstand': if (S.busy) return; S.busy = true; render(); return emit('stand').then(() => { S.busy = false; render(); });

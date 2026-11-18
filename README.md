@@ -37,6 +37,7 @@ node scripts/sim-leave.mjs http://localhost:8080  # leavers never block; match e
 node scripts/ui-test.mjs http://localhost:8080    # Playwright: solo game + a full 2-browser match (round reveal,
                                                   # stats, trophy room, saved results), writes screenshots/
 node scripts/ui-six.mjs http://localhost:8080     # Playwright: 6-seat room on desktop + mobile, lock-in badges, results → table
+# every multiplayer test takes MODE=classic|live (default classic), e.g. MODE=live node scripts/ui-test.mjs …
 node scripts/sim-restart.mjs                      # own server: SIGINT mid round 2 + SIGKILL mid round 3; the match
                                                   # must resume with identical hands, steps and scores
 node scripts/live-test.mjs https://your-app 3 45  # real browsers vs a deployed site: 3 rounds, 45 s idle at results
@@ -119,6 +120,25 @@ of its next decks and matches. The browser only receives the cards it plays with
 7. After round 10 (`ROUNDS`) the top of the table is **champion**. If totals are level: most rounds won → best
    single round → fastest total finishing time → seat order. Players who left can't be champion. If only one player
    is left, the match ends early.
+
+### Game modes: Classic and Live Lines
+
+The room creator picks the mode on the *Play with friends* screen; it is stored with the room and with every match in
+SQLite (`rooms.mode`, `matches.mode`, migrated in place for older databases, which default to Classic) and survives
+restarts. Invite links show the room's mode before joining (`GET /api/room/CODE`) and always join in that mode. The
+mode is shown in the room header, on saved results, in the trophy room, and as a column + filter on the multiplayer
+stats page (`GET /api/stats?mode=classic|live`).
+
+- **Classic**: what your cards share stays hidden until the end-of-round reveal (match lines only appear there).
+- **Live Lines**: while you play, thin lines join your matching cards with small `+N` labels, plus your current hand
+  name and running total. They redraw as soon as the new cards arrive after each swap (and on resize). The browser
+  scores the hand with the same `scoreHand()` (`public/shared/game.js`) the reveal and the server use, so the live
+  total always equals the final score; in this mode the server sends your own hand's traits and their pool counts.
+  Cards marked *Swap out* still count until the swap happens (their lines are dimmed). Once you're locked in the lines
+  freeze on your final hand with the final total; the reveal then plays as in Classic. Line layers have
+  `pointer-events: none`, so they never block taps.
+
+Solo games (Daily / Random) are Classic.
 
 Trait points: `max(0, round((log2(poolSize / traitCount) − 2) × k² × 1.2))` for `k` cards sharing a trait.
 Traits held by more than 1/8 of the pool (Forward, Born in the 1980s, 2014 FIFA World Cup…) don't count toward the hand shape.

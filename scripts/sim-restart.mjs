@@ -29,7 +29,8 @@ function client(name) {
 await startServer();
 const a = client('A'), b = client('B');
 await Promise.all([a, b].map((c) => new Promise((r) => c.s.once('connect', r))));
-const { code } = await a.e('create', { name: 'A' }); a.code = code;
+const MODE = process.env.MODE ?? 'classic';
+const { code } = await a.e('create', { name: 'A', mode: MODE }); a.code = code;
 assert((await b.e('join', { code, name: 'B' })).ok, 'join'); b.code = code;
 const waitFor = async (fn, ms, what) => { const t = Date.now(); while (!fn()) { if (Date.now() - t > ms) assert(false, `timeout: ${what}`); await sleep(30); } };
 for (const c of [a, b]) await c.e('ready', { ready: true });
@@ -58,7 +59,9 @@ assert(a.st.match.you.hand.map((x) => x.id).join() === handA, 'A hand changed ac
 assert(b.st.match.you.hand.map((x) => x.id).join() === handB, 'B hand changed across restart');
 assert(a.st.match.you.step === 1, 'A discard step restored');
 assert(a.st.match.table.map((r) => `${r.name}=${r.total}`).join() === r1, 'league table restored');
-console.log('  restored: same round, same hands, same table, clients rejoined automatically ✓');
+assert(a.st.mode === MODE && a.st.match.mode === MODE, `mode lost across restart: ${a.st.mode}/${a.st.match.mode}`);
+assert(MODE !== 'live' || (a.st.match.you.meta && a.st.match.you.hand.every((x) => Array.isArray(x.traits))), 'live traits after restart');
+console.log(`  restored: same round, same hands, same table, same mode (${MODE}), clients rejoined automatically ✓`);
 await a.e('stand'); await b.e('stand');
 await waitFor(() => a.st.match.phase === 'roundEnd' && a.st.match.last.round === 2, 3000, 'round 2 end');
 for (const c of [a, b]) await c.e('ready', { ready: true });
@@ -84,6 +87,7 @@ console.log('  restored after crash: identical hands, discard step, B\'s locked 
 await a.e('stand');
 await waitFor(() => a.st.match.last?.round === 3, 3000, 'round 3 end');
 const saved = await (await fetch(`${URL}/api/match/${code}/1`)).json();
+assert(saved.mode === MODE, 'saved mode');
 assert(saved.rows.length === 2 && saved.rows.every((r) => r.rounds.length === 3), 'saved results in DB');
 assert(saved.rows.map((r) => r.total).join() === a.st.match.table.map((r) => r.total).join(), 'DB totals = live table');
 console.log(`  3 rounds done across a restart · max state ${Math.max(a.maxBytes, b.maxBytes)} bytes · ${a.msgs} msgs to A`);

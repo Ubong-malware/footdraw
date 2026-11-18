@@ -6,7 +6,8 @@ const assert = (c, m) => { if (!c) { console.error('ASSERT FAILED:', m); process
 const mk = (n) => { const s = io(URL, { auth: { token: randomBytes(16).toString('hex') }, transports: ['websocket'], forceNew: true }); const c = { s, n }; s.on('state', (st) => c.st = st); c.e = (ev, d) => new Promise((r) => s.emit(ev, d, r)); return c; };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const [a, b, c] = ['A', 'B', 'C'].map(mk); await sleep(300);
-const { code } = await a.e('create', { name: 'A' }); await b.e('join', { code, name: 'B' }); await c.e('join', { code, name: 'C' });
+const MODE = process.env.MODE ?? 'classic';
+const { code } = await a.e('create', { name: 'A', mode: MODE }); await b.e('join', { code, name: 'B' }); await c.e('join', { code, name: 'C' });
 for (const x of [a, b, c]) await x.e('ready', { ready: true }); await sleep(+(process.env.READY_COUNTDOWN_MS ?? 3000) + 500);
 await a.e('stand'); await b.e('stand'); await sleep(100);
 console.log('before C leaves:', a.st.match.phase, 'waiting', a.st.match.waitingFor);
@@ -19,5 +20,6 @@ console.log('round 2 started without C:', a.st.match.phase, a.st.match.round);
 await b.e('leave'); await sleep(300);
 console.log('after B leaves too:', a.st.match.phase, 'champion', a.st.match.champion, a.st.match.championWhy);
 assert(a.st.match.phase === 'final' && a.st.match.champion, 'match ends when only one player remains');
-console.log('PASS: leave handling');
+assert(a.st.mode === MODE && a.st.match.mode === MODE, 'room/match mode');
+console.log(`PASS: leave handling (${MODE})`);
 process.exit(0);

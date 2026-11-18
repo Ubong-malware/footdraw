@@ -2,12 +2,14 @@
 // Usage: node scripts/sim.mjs [url] [players]      (start the server with READY_COUNTDOWN_MS=300 for speed)
 import { io } from 'socket.io-client';
 import { randomBytes } from 'node:crypto';
+import { scoreHand } from '../public/shared/game.js';
+const MODE = process.env.MODE ?? 'classic'; // game mode: classic | live
 const URL = process.argv[2] ?? 'http://localhost:8080';
 const N = +(process.argv[3] ?? 4);
 const COUNTDOWN = +(process.env.READY_COUNTDOWN_MS ?? 3000);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const assert = (c, m) => { if (!c) { console.error('ASSERT FAILED:', m); process.exit(1); } };
-const stats = { draws: 0, keptChecked: 0, rounds: 0, staleRejected: 0 };
+const stats = { draws: 0, keptChecked: 0, rounds: 0, staleRejected: 0, liveChecked: 0 };
 
 function client(name, token = randomBytes(16).toString('hex')) {
   const s = io(URL, { auth: { token }, transports: ['websocket'], forceNew: true });
@@ -15,8 +17,17 @@ function client(name, token = randomBytes(16).toString('hex')) {
   s.on('state', (st) => {
     c.state = st;
     assert(st.roundMs === +(process.env.ROUND_MS ?? 90000), `round timer should be 90000 ms (1:30), got ${st.roundMs}`);
+    assert(st.mode === MODE, `room mode ${st.mode}, expected ${MODE}`);
+    if (st.match) assert(st.match.mode === MODE, `match mode ${st.match.mode}, expected ${MODE}`);
     const yu = st.match?.you;
     if (yu) {
+      if (MODE === 'live') {
+        // Live Lines: your own hand comes with traits + trait meta, and scoring it in the client gives exactly the
+        // server's score once you're locked in.
+        assert(yu.meta && yu.hand.every((x) => Array.isArray(x.traits)), 'live mode: hand traits/meta missing');
+        const live = scoreHand(yu.hand, yu.meta);
+        if (yu.done) { assert(live.points === yu.result.points && live.hand === yu.result.hand, `live score ${live.points} ≠ server ${yu.result.points}`); stats.liveChecked++; }
+      } else assert(!yu.meta && yu.hand.every((x) => !('traits' in x)), 'classic mode must not send traits');
       const want = N >= 5 ? 25 : 15;
       assert(yu.deckSize === want, `deck size ${yu.deckSize}, expected ${want} for ${N} players`);
       assert(new Set(yu.hand.map((x) => x.id)).size === 5, 'hand has duplicate cards');
@@ -42,8 +53,10 @@ function client(name, token = randomBytes(16).toString('hex')) {
 
 const players = Array.from({ length: N }, (_, i) => client(`Bot${i + 1}`));
 await Promise.all(players.map((p) => new Promise((r) => p.s.on('connect', r))));
-const created = await players[0].emit('create', { name: players[0].name });
-assert(created.ok, 'create room'); const code = created.code; console.log('room', code);
+const created = await players[0].emit('create', { name: players[0].name, mode: MODE });
+assert(created.ok && created.mode === MODE, 'create room');
+const info = await (await fetch(`${URL}/api/room/${created.code}`)).json();
+assert(info.mode === MODE, 'invite info shows the room mode'); const code = created.code; console.log('room', code);
 for (const p of players.slice(1)) assert((await p.emit('join', { code, name: p.name })).ok, `join ${p.name}`);
 if (N === 6) {
   const extra = client('Extra'); await new Promise((r) => extra.s.on('connect', r));
@@ -147,6 +160,10 @@ const fm = players[0].state.match;
 assert(fm?.phase === 'final' && fm.round === 10 && stats.rounds === 10, `match should finish after 10 rounds (phase ${fm?.phase}, round ${fm?.round})`);
 assert(fm.champion === fm.table[0].name && fm.championPts === fm.table[0].total, 'champion is top of the table');
 console.log(`  🏆 champion: ${fm.champion}${fm.championWhy ? ` (${fm.championWhy})` : ''}`);
+if (MODE === 'live') assert(stats.liveChecked >= N, 'live score checks ran');
+const saved = await (await fetch(`${URL}/api/match/${code}/1`)).json();
+assert(saved.mode === MODE, `saved results mode ${saved.mode}`);
+console.log(`mode ${MODE}: ${stats.liveChecked} live-score = server-score checks`);
 console.log(`kept-card checks: ${stats.keptChecked} draws verified, ${stats.staleRejected} duplicate submits rejected, ${stats.rounds} rounds verified`);
 console.log(`PASS: ${N} players, full ${fm.round}-round match (${N >= 5 ? 25 : 15}-card decks)`);
 players.forEach((p) => p.s.close());
