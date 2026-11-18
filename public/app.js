@@ -9,6 +9,10 @@ const cardName = (c) => (c.title ?? '').replace(/ \([^)]*\)$/, '');
 const isLogo = (u) => /logo|crest|badge|\.svg/i.test(u ?? '');
 const today = () => new Date().toLocaleDateString('en-CA');
 const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+// 90 → "1:30"
+const clock = (ms) => { const s = Math.max(0, Math.ceil(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+const ICON_PITCH = '<svg viewBox="0 0 32 24" width="30" height="22" aria-hidden="true"><rect x="1" y="1" width="30" height="22" rx="2"/><path d="M16 1v22"/><circle cx="16" cy="12" r="4.5"/><path d="M1 8h4v8H1M31 8h-4v8h4"/></svg>';
+const ICON_CUP = '<svg class="cupi" viewBox="0 0 24 24" width="1em" height="1em" aria-hidden="true"><path d="M7 4h10v5a5 5 0 0 1-10 0z"/><path d="M7 6H4v1a3 3 0 0 0 3 3M17 6h3v1a3 3 0 0 1-3 3M12 14v4M8 21h8M9 18h6"/></svg>';
 
 // Browser identity (keeps your seat across reloads and reconnects).
 let token = localStorage.getItem('fd_token');
@@ -17,7 +21,7 @@ if (!token) { token = [...crypto.getRandomValues(new Uint8Array(16))].map((b) =>
 const MODES = [
   { mode: 'daily', name: 'Daily deck', blurb: "Today's 15 cards." },
   { mode: 'random', name: 'Random deck', blurb: '15 cards from the entire football pool.' },
-  { mode: 'friends', name: 'Play with friends', blurb: '10-round match, up to 6 players.' },
+  { mode: 'friends', name: 'Play with friends', blurb: '10-round league for 2–6 players.' },
 ];
 
 const S = {
@@ -38,36 +42,63 @@ const poolFrom = (d) => ({ meta: { traits: d.traits, size: d.size }, byId: new M
 
 // ---------- Rendering helpers ----------
 const seen = new Set();
+// One-line tag under the name: the Wikipedia short description without its "(born 1987)" style asides.
+const tagline = (c) => (c.description ?? '').replace(/\s*\([^)]*\)/g, '').replace(/\s+/g, ' ').trim().replace(/^./, (x) => x.toUpperCase());
+// Placeholder when a card has no picture: a simple line icon for its kind.
+const KIND_ICON = {
+  player: '<svg viewBox="0 0 24 24" width="24" height="24"><circle cx="12" cy="8" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/></svg>',
+  club: '<svg viewBox="0 0 24 24" width="24" height="24"><path d="M12 3l7 3v5c0 5-3.5 8-7 10-3.5-2-7-5-7-10V6z"/></svg>',
+  nation: '<svg viewBox="0 0 24 24" width="24" height="24"><path d="M6 21V4M6 4h11l-2 4 2 4H6"/></svg>',
+  event: '<svg viewBox="0 0 24 24" width="24" height="24"><path d="M7 4h10v5a5 5 0 0 1-10 0zM7 6H4v1a3 3 0 0 0 3 3M17 6h3v1a3 3 0 0 1-3 3M12 14v4M8 21h8M9 18h6"/></svg>',
+};
 function cardHTML(c, { idx, discarded, toggle, info, suit, hl, link = true, badge } = {}) {
   const fresh = !seen.has(c.id); seen.add(c.id);
-  const pic = c.thumbnail ? `<img src="${esc(c.thumbnail)}" alt="" decoding="async">` : `<div class="letter" aria-hidden="true">${esc(c.title[0])}</div>`;
-  const inner = `<div class="pic ${isLogo(c.thumbnail) ? 'contain' : ''}">${pic}</div><div class="cap"><div class="ttl">${esc(cardName(c))}</div>${c.description ? `<div class="desc">${esc(c.description)}</div>` : ''}</div>`;
+  const pic = c.thumbnail ? `<img src="${esc(c.thumbnail)}" alt="" decoding="async">` : `<div class="letter" aria-hidden="true">${KIND_ICON[c.kind] ?? esc(c.title[0])}</div>`;
+  const tl = tagline(c);
+  const inner = `<div class="pic ${isLogo(c.thumbnail) ? 'contain' : ''}">${pic}</div><div class="cap"><div class="ttl">${esc(cardName(c))}</div>${tl ? `<div class="desc" title="${esc(c.description)}">${esc(tl)}</div>` : ''}</div>`;
   const cls = `card ${discarded ? 'discarded' : ''} ${hl ? 'hl' : ''}`;
   const body = toggle
     ? `<button type="button" class="${cls}" data-act="toggle" data-i="${idx}" aria-pressed="${!!discarded}">${inner}</button>`
     : link ? `<a class="${cls}" href="${wikiUrl(c.title)}" target="_blank" rel="noopener noreferrer">${inner}</a>`
       : `<button type="button" class="${cls}" data-act="cardinfo" data-id="${esc(c.id)}">${inner}</button>`;
-  return `<div class="slot${fresh ? ' fresh' : ''}">${body}${discarded ? '<div class="tag" aria-hidden="true">Swap out</div>' : ''}${badge ? `<div class="newb">${esc(badge)}</div>` : ''}${suit ? `<div class="suit" aria-hidden="true">${suit}</div>` : ''}${info ? `<button type="button" class="info" data-act="info" data-id="${esc(c.id)}" aria-label="About ${esc(c.title)}">i</button>` : ''}</div>`;
+  return `<div class="slot${fresh ? ' fresh' : ''}">${body}${discarded ? '<div class="tag" aria-hidden="true">Swap out</div>' : ''}${badge ? `<div class="newb">${esc(badge)}</div>` : ''}${suit ? `<div class="suit ${suit.startsWith('♥') ? 'sa' : 'sb'}" aria-hidden="true">${suit.replace('\ufe0f', '')}</div>` : ''}${info ? `<button type="button" class="info" data-act="info" data-id="${esc(c.id)}" aria-label="About ${esc(c.title)}">i</button>` : ''}</div>`;
 }
 const pileHTML = (n) => {
   const st = 2.5, k = Math.min(Math.max(n - 1, 0), 14);
   return `<div class="pile" role="img" aria-label="${n} cards left in the deck" style="padding-top:${k * st}px;padding-left:${k * st}px">${Array.from({ length: k }, (_, i) => `<div class="c s" style="top:${i * st}px;left:${i * st}px"></div>`).join('')}<div class="c top ${n === 0 ? 'empty' : ''}">${n}</div></div>`;
 };
-const discardsHTML = (left) => `<div class="discards" role="img" aria-label="${left} of 2 discards left"><span class="lbl">Remaining Discards:</span><span>${[0, 1].map((i) => `<span class="j ${i >= left ? 'used' : ''}">🃏</span>`).join('')}</span></div>`;
+const discardsHTML = (left) => `<div class="discards" role="img" aria-label="${left} of 2 discards left"><span class="lbl">Swaps left</span>${[0, 1].map((i) => `<span class="j ${i >= left ? 'used' : ''}"></span>`).join('')}</div>`;
+// The tactics board: cards laid out like a formation, with thin lines between matching cards (drawn by drawLinks
+// after each render from data-links = [{c:[card idx], p:points, s:'on'|'past'|'done'}]).
+const boardHTML = (inner, links) => `<div class="board"${links ? ` data-links="${esc(JSON.stringify(links))}"` : ''}><svg class="links" aria-hidden="true"></svg><div class="grid formation">${inner}</div><svg class="links labels" aria-hidden="true"></svg></div>`;
 const matchTable = (r, cardsByIdx) => r.matches.length ? `<table class="wt"><thead><tr><th scope="col">In common</th><th scope="col">Cards</th><th scope="col">Points</th></tr></thead><tbody>
   ${r.matches.map((m) => `<tr><td><strong>${esc(m.label)}</strong></td><td>${m.cards.map((i) => esc(cardName(cardsByIdx[i]))).join(', ')}</td><td>+${m.points}</td></tr>`).join('')}
   ${BONUS[r.hand] > 0 ? `<tr><td colspan="2"><em>${r.hand} bonus</em></td><td>+${BONUS[r.hand]}</td></tr>` : ''}</tbody></table>` : '<p class="muted" style="margin-bottom:16px">Nothing in this hand had anything in common.</p>';
 
-function topbar() {
-  return `<div class="topbar">
-    <button type="button" class="burger ${S.menu ? 'open' : ''}" data-act="menu" aria-label="Main menu" aria-expanded="${S.menu}"><span></span><span></span><span></span></button>
-    <a class="logo" href="/" data-act="home"><b>${BRAND}</b><small>The free football card game</small></a>
-    <button type="button" class="help" data-act="help" aria-label="How to play" aria-haspopup="dialog"><svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-2.9 3-2.9 3"/><path d="M12 17h.01"/></svg></button>
-    ${S.menu ? `<nav class="menu"><h2>Main menu</h2><ul><li><button data-act="home">Main page</button></li><li><button data-act="page" data-page="stats">Stats</button></li><li><button data-act="mpage" data-page="mpstats">Multiplayer stats</button></li><li><button data-act="mpage" data-page="trophies">Trophy room</button></li><li><button data-act="page" data-page="about">About</button></li></ul>
-      <p>Play</p><ul>${MODES.map((m) => `<li><button data-act="mode" data-mode="${m.mode}">${m.name}</button></li>`).join('')}</ul></nav>` : ''}
-  </div>`;
+function topbarInfo() {
+  const st = S.room, m = st?.match;
+  if (S.view === 'room' && st) {
+    const mid = !m ? `Room ${esc(st.code)}` : m.phase === 'final' ? 'Full time' : `Round ${m.round} / ${st.rounds}`;
+    const right = m?.phase === 'playing' && m.deadline ? `<span class="secs" data-left="${m.deadline}" title="Time left: you auto-lock at 0:00">${clock(m.deadline - Date.now())}</span>` : '';
+    const bar = m?.phase === 'playing' && m.deadline ? `<div class="timer" aria-hidden="true"><i data-deadline="${m.deadline}" style="width:${Math.max(0, Math.min(100, (m.deadline - Date.now()) / st.roundMs * 100))}%"></i></div>` : '';
+    return { mid, right, bar };
+  }
+  if (S.view === 'solo' && S.solo && !S.solo.loading) return { mid: S.solo.mode === 'daily' ? `Daily · ${esc(S.solo.date)}` : 'Random deck', right: '', bar: '' };
+  return { mid: '', right: '', bar: '' };
 }
-const pageHead = (title) => `<header class="page-head"><h1>${esc(title)}</h1></header><p class="from">From Wikipedia, the free encyclopedia</p>`;
+function topbar() {
+  const { mid, right, bar } = topbarInfo();
+  return `<header class="topbar">
+    <a class="logo" href="/" data-act="home">${BRAND.toUpperCase()}</a>
+    <div class="tb-mid">${mid}</div>
+    <div class="tb-right">${right}${right ? '<span class="tb-div" aria-hidden="true"></span>' : ''}
+      <button type="button" class="help" data-act="help" aria-label="How to play" aria-haspopup="dialog">?</button>
+      <button type="button" class="burger ${S.menu ? 'open' : ''}" data-act="menu" aria-label="Main menu" aria-expanded="${S.menu}">${ICON_PITCH}</button></div>
+    ${S.menu ? `<nav class="menu"><ul><li><button data-act="home">Home</button></li><li><button data-act="help">How to play</button></li><li><button data-act="page" data-page="stats">Solo stats</button></li><li><button data-act="mpage" data-page="mpstats">Multiplayer stats</button></li><li><button data-act="mpage" data-page="trophies">Trophy room</button></li><li><button data-act="page" data-page="about">About</button></li></ul>
+      <p>Play</p><ul>${MODES.map((m) => `<li><button data-act="mode" data-mode="${m.mode}">${m.name}</button></li>`).join('')}</ul></nav>` : ''}
+  </header>${bar}`;
+}
+const pageHead = (title, sub = '') => `<header class="page-head"><h1>${esc(title)}</h1>${sub ? `<p class="from">${sub}</p>` : ''}</header>`;
 
 function modalHTML() {
   const m = S.modal; if (!m) return '';
@@ -80,25 +111,80 @@ function modalHTML() {
   }
   return shell('How to play', `<div class="body">
     <p>Five-card draw with Wikipedia football articles as cards: players, clubs, national teams and tournaments. Build a hand of cards that have something in common: the same nation, club, position, World Cup, decade of birth, award, etc.</p>
-    <h3>Playing solo</h3><ul><li>You're dealt 5 cards from a 15-card deck.</li><li>Tap the cards you want to swap, then <strong>Discard</strong>. You'll draw the same number of cards from the deck.</li><li>You get two chances to discard and draw. <strong>Stand</strong> any time to keep your hand.</li><li>Tap <span class="ibadge">i</span> on a card to read about it. The pile in the bottom-right corner shows how many cards are left.</li></ul>
+    <h3>Playing solo</h3><ul><li>You're dealt 5 cards from a 15-card deck.</li><li>Tap the cards you want to swap, then <strong>Swap</strong>. You'll draw the same number of cards from the deck.</li><li>You get two swaps. <strong>Lock in</strong> any time to keep your hand.</li><li>Tap <span class="ibadge">i</span> on a card to read about it. The small pile shows how many cards are left in the deck.</li></ul>
     <h3>Scoring</h3><ul><li>Every trait two or more cards share scores points.</li><li>Rarer traits score more: five players born in Rosario beat five forwards.</li><li>The most common traits, like Forward or Born in the 1980s, score little or nothing and don't count toward the hand shape.</li><li>Bigger groups score much more, plus a bonus for the shape of the hand.</li><li>What your cards share stays hidden until the end.</li></ul>
     <h3>Hands</h3><ol>${HANDS.map((h) => `<li><strong>${h} (+${BONUS[h]})</strong>: ${{ Flush: 'all five share a trait', 'Four of a Kind': 'four share a trait', 'Full House': 'three share one trait, two share another', 'Three of a Kind': 'three share a trait', 'Two Pair': 'two separate pairs', Pair: 'two share a trait', 'High Card': 'nothing shared' }[h]}</li>`).join('')}</ol>
     <h3>Play with friends: 10-round match</h3><ul>
       <li>2–6 players per room. Share the room link or 5-letter code. Each round's deck has 15 cards with 2–4 players and 25 cards with 5–6 players.</li>
       <li>Everyone presses <strong>Ready</strong>; the match starts only when all players are ready, and again before every round.</li>
-      <li>Each round is a normal FootDraw game. All players get the <strong>same deck</strong> (15 cards, or 25 with 5–6 players; a new deck every round), each in their own shuffle, and play at the same time: tap cards to swap out, two discards, or Stand. Cards you keep never change.</li>
-      <li>A round ends when everyone has finished (1 minute max: when the timer runs out, anyone still playing automatically stands with the hand they have).</li>
-      <li>When you stand, use both discards or run out of time, you're <strong>locked in</strong>: every seat shows <em>Locked in ✓</em> or <em>Playing…</em>, and your screen lists who you're waiting for.</li>
-      <li>Once everyone is locked in, all players see the reveal at the same moment: your hand's points tally up, then everyone's hands and the table appear (or tap <strong>Skip to results</strong>).</li>
+      <li>Each round is a normal FootDraw game. All players get the <strong>same deck</strong> (15 cards, or 25 with 5–6 players; a new deck every round), each in their own shuffle, and play at the same time: tap cards to swap out, two swaps, or Lock in. Cards you keep never change.</li>
+      <li>A round ends when everyone has finished (1:30 max: when the timer in the top bar runs out, anyone still playing is locked in with the hand they have).</li>
+      <li>When you lock in, use both swaps or run out of time, you're <strong>locked in</strong>: every seat shows <em>Locked in ✓</em> or <em>Playing…</em>, and your screen lists who you're waiting for.</li>
+      <li>Once everyone is locked in, all players see the reveal at the same moment: lines connect your matching cards as the points tally up, then everyone's hands and the table appear (or tap <strong>Skip to results</strong>).</li>
       <li>Your round score is added to the <strong>league table</strong>. Highest score wins the round (ties: whoever finished first).</li>
       <li>After round 10 the top of the table is champion. Level on points? Then most rounds won, then best single round, then fastest total finishing time.</li></ul>
     <h3>Modes</h3><ul><li><strong>Daily deck</strong>: the day's 15 cards are the same for everyone, shuffled uniquely for each player.</li><li><strong>Random deck</strong>: 15 cards from the entire pool.</li><li><strong>Play with friends</strong>: a 10-round league match against up to 5 friends. Matches are saved, so a dropped connection or server restart doesn't end them. See <strong>Multiplayer stats</strong> and the <strong>Trophy room</strong> in the menu.</li></ul></div>`);
 }
 
+// ---------- Match lines on the board ----------
+// Thin white lines join the cards of each match (edge to edge, chained in board order) with a small "+N" label.
+let lastLinks = '';
+function drawLinks() {
+  document.querySelectorAll('.board[data-links]').forEach((b) => {
+    // Re-renders of the same scene (socket updates, resizes) keep the lines still instead of drawing them in again.
+    const still = b.dataset.links === lastLinks ? ' still' : ''; lastLinks = b.dataset.links;
+    const [under, over] = b.querySelectorAll('svg.links'); if (!under || !over) return;
+    let links; try { links = JSON.parse(b.dataset.links); } catch { return; }
+    const br = b.getBoundingClientRect(); if (!br.width) return;
+    for (const svg of [under, over]) { svg.setAttribute('viewBox', `0 0 ${br.width} ${br.height}`); svg.setAttribute('width', br.width); svg.setAttribute('height', br.height); }
+    const boxes = [...b.querySelectorAll('.grid > .slot')].map((s) => {
+      const r = (s.querySelector('.card') ?? s).getBoundingClientRect();
+      return { x: r.left - br.left + r.width / 2, y: r.top - br.top + r.height / 2, hw: r.width / 2 + 4, hh: r.height / 2 + 4 };
+    });
+    const f = (n) => n.toFixed(1);
+    const inBox = (B, x, y, pad = 6) => Math.abs(x - B.x) < B.hw + pad && Math.abs(y - B.y) < B.hh + pad;
+    const quad = (P, C, Q, t) => [(1 - t) ** 2 * P.x + 2 * (1 - t) * t * C[0] + t * t * Q.x, (1 - t) ** 2 * P.y + 2 * (1 - t) * t * C[1] + t * t * Q.y];
+    // Where a line from the centre of box A towards point (tx, ty) leaves A's edge.
+    const exit = (A, tx, ty) => { const dx = tx - A.x, dy = ty - A.y; const t = Math.min(dx ? A.hw / Math.abs(dx) : Infinity, dy ? A.hh / Math.abs(dy) : Infinity, 0.5); return [A.x + dx * t, A.y + dy * t]; };
+    // Route a segment between two cards: straight if clear, else bend around the cards in the way.
+    const route = (ia, ib) => {
+      const A = boxes[ia], B = boxes[ib], others = boxes.filter((_, i) => i !== ia && i !== ib);
+      const mx = (A.x + B.x) / 2, my = (A.y + B.y) / 2, len = Math.hypot(B.x - A.x, B.y - A.y) || 1, nx = -(B.y - A.y) / len, ny = (B.x - A.x) / len;
+      const clear = (C) => { for (let t = 0.1; t < 0.95; t += 0.05) { const [x, y] = quad(A, C, B, t); if (others.some((O) => inBox(O, x, y, 4))) return false; } return true; };
+      let C = [mx, my];
+      if (!clear(C)) for (const o of [70, -70, 120, -120, 170, -170, 230, -230]) { const c = [mx + nx * o, my + ny * o]; if (clear(c)) { C = c; break; } }
+      const p1 = exit(A, ...C), p2 = exit(B, ...C);
+      return { A, B, C, p1, p2, others };
+    };
+    // Each match chains its cards in board order. Labels sit on the match's middle segment; once the reveal is done,
+    // matches on the same pair of cards share one summed label so the board stays readable.
+    const labels = new Map(); let lines = '';
+    for (const l of links) {
+      const idx = [...l.c].filter((i) => boxes[i]).sort((a, z) => (boxes[a].x - boxes[z].x) || (boxes[a].y - boxes[z].y));
+      if (idx.length < 2) continue;
+      const segs = idx.slice(1).map((i, k) => ({ ...route(idx[k], i), key: `${idx[k]}-${i}` }));
+      for (const { p1, p2, C } of segs) lines += `<g class="ln ${l.s}${still}"><path d="M${f(p1[0])} ${f(p1[1])}Q${f(C[0])} ${f(C[1])} ${f(p2[0])} ${f(p2[1])}" pathLength="1"/><circle cx="${f(p1[0])}" cy="${f(p1[1])}" r="3"/><circle cx="${f(p2[0])}" cy="${f(p2[1])}" r="3"/></g>`;
+      if (l.s === 'past') continue;
+      const sg = segs[Math.floor((segs.length - 1) / 2)];
+      const key = l.s === 'done' ? sg.key : `on:${sg.key}`;
+      const prev = labels.get(key);
+      // Put the label on the visible part of the line, never on top of a card.
+      const P = { x: sg.p1[0], y: sg.p1[1] }, Q = { x: sg.p2[0], y: sg.p2[1] };
+      const [x, y] = [0.5, 0.35, 0.65, 0.22, 0.78, 0.1, 0.9].map((t) => quad(P, sg.C, Q, t)).find(([px, py]) => !boxes.some((B) => inBox(B, px, py, 8))) ?? quad(P, sg.C, Q, 0.5);
+      labels.set(key, { s: l.s, p: (prev?.p ?? 0) + l.p, x, y });
+    }
+    under.innerHTML = lines;
+    over.innerHTML = [...labels.values()].map((L) => { const txt = `+${L.p}`, w = 14 + txt.length * 8; return `<g class="lb ${L.s}${still}"><rect x="${f(L.x - w / 2)}" y="${f(L.y - 11)}" width="${w}" height="22" rx="11"/><text x="${f(L.x)}" y="${f(L.y + 4.5)}" text-anchor="middle">${txt}</text></g>`; }).join('');
+  });
+}
+let linkRaf = 0;
+addEventListener('resize', () => { cancelAnimationFrame(linkRaf); linkRaf = requestAnimationFrame(drawLinks); });
+document.fonts?.ready.then(() => drawLinks());
+
 // ---------- Views ----------
 function render() {
   let body = '', after = '';
-  if (S.view === 'stats') body = pageHead('Stats') + statsHTML();
+  if (S.view === 'stats') body = pageHead('Solo stats') + statsHTML();
   else if (S.view === 'about') body = pageHead(`About ${BRAND}`) + `<div class="prose"><p>${BRAND} is five-card draw played with Wikipedia's football articles: famous players, clubs, national teams and tournaments. Card traits come from Wikidata, texts and images from Wikipedia, and live squad info from TheSportsDB.</p><p>Inspired by the format of Wikdraw. If you enjoy the game, consider <a href="https://donate.wikimedia.org/" target="_blank" rel="noopener">donating to Wikipedia</a>.</p></div>`;
   else if (S.view === 'solo') ({ body, after } = soloHTML());
   else if (S.view === 'lobby') body = lobbyHTML();
@@ -106,11 +192,14 @@ function render() {
   else if (S.view === 'trophies') body = pageHead('Trophy room') + trophiesHTML();
   else if (S.view === 'results') body = pageHead('Match results') + savedResultsHTML();
   else if (S.view === 'room') ({ body, after } = roomHTML());
-  else body = pageHead(`Welcome to ${BRAND}`) + `<div class="modes">${MODES.map((m) => `<button type="button" class="mode" data-act="mode" data-mode="${m.mode}"><strong>${m.name}</strong><span>${m.blurb}</span></button>`).join('')}</div>`;
+  else body = `<section class="hero"><p class="kicker">The football card game</p><h1>Pick five. Find what they share.</h1><p class="sub">Players, clubs, nations and tournaments from Wikipedia. Two swaps, then lock in. Matching cards score.</p></section>
+    <div class="modes">${MODES.map((m, i) => `<button type="button" class="mode" data-act="mode" data-mode="${m.mode}"><em>0${i + 1}</em><strong>${m.name}</strong><span>${m.blurb}</span></button>`).join('')}</div>
+    <nav class="homelinks"><a href="/stats" data-act="mpage" data-page="mpstats">Multiplayer stats</a><a href="/trophies" data-act="mpage" data-page="trophies">Trophy room</a><button type="button" data-act="page" data-page="stats">Solo stats</button><button type="button" data-act="help">How to play</button></nav>`;
   const active = document.activeElement?.id;
   const banner = S.view === 'room' && S.conn ? `<div class="connbar" role="status">${S.conn === 'restarting' ? 'The server is restarting. Your match is saved, reconnecting…' : 'Connection lost. Reconnecting…'}</div>` : '';
   window.__fd && window.__fd.renders++;
-  $root.innerHTML = `${banner}<main class="main"><div class="screen">${topbar()}${body}</div>${after}</main>${modalHTML()}`;
+  $root.innerHTML = `${banner}<main class="main view-${S.view}"><div class="screen">${topbar()}${body}</div>${after}</main>${modalHTML()}`;
+  drawLinks();
   if (active && document.getElementById(active)) document.getElementById(active).focus();
   animateCount();
 }
@@ -164,7 +253,7 @@ function mpStatsHTML() {
   const br = d.bestRound;
   return `${mpNav('mpstats')}<div class="mpstats">
     <table class="infobox"><caption>${esc(d.name ?? 'You')}</caption><tbody>
-      ${kv('Matches played', d.matchesPlayed)}${kv('League titles', `${d.titles} 🏆`)}${kv('Win %', `${d.winPct}%`)}
+      ${kv('Matches played', d.matchesPlayed)}${kv('League titles', d.titles)}${kv('Win %', `${d.winPct}%`)}
       ${kv('Rounds played', d.roundsPlayed)}${kv('Rounds won', d.roundsWon)}${kv('Average round', `${d.avgRound} pts`)}
       ${kv('Best round', br ? `${br.points} pts<br><small>${esc(br.hand)}</small>` : '–')}
       ${kv('Highest match total', d.highestTotal ? `${d.highestTotal.total} pts` : '–')}${kv('Average finish', d.avgPos ? ord(Math.round(d.avgPos)) + ` <small>(${d.avgPos})</small>` : '–')}
@@ -173,7 +262,7 @@ function mpStatsHTML() {
     <section class="section"><h2>Most-used cards</h2><table class="wt"><thead><tr><th scope="col">Card</th><th scope="col">Final hands</th></tr></thead><tbody>${d.topCards.map((c) => `<tr><td><a href="${wikiUrl(c.name)}" target="_blank" rel="noopener noreferrer">${esc(cardName({ title: c.name }))}</a></td><td>${c.count}</td></tr>`).join('')}</tbody></table></section>
     <section class="section"><h2>Most-scored traits</h2><table class="wt"><thead><tr><th scope="col">In common</th><th scope="col">Rounds</th></tr></thead><tbody>${d.topTraits.map((c) => `<tr><td>${esc(c.name)}</td><td>${c.count}</td></tr>`).join('')}</tbody></table></section>
     <section class="section"><h2>Hands</h2><table class="wt"><thead><tr><th scope="col">Hand</th><th scope="col">Count</th></tr></thead><tbody>${HANDS.map((h) => `<tr><td>${h}</td><td>${d.hands[h] ?? 0}</td></tr>`).join('')}</tbody></table></section>
-    <section class="section"><h2>Recent matches</h2>${d.history.length ? `<table class="wt"><thead><tr><th scope="col">Date</th><th scope="col">Opponents</th><th scope="col">Finish</th><th scope="col">Points</th><th scope="col">Final table</th></tr></thead><tbody>${d.history.map((h) => `<tr><td>${fmtDate(h.at)}</td><td>${h.opponents.map(esc).join(', ')}</td><td>${h.won ? '🏆 ' : ''}${ord(h.pos)} of ${h.players}</td><td>${h.total}</td><td>${resultsLink(h.code, h.no, 'View')}</td></tr>`).join('')}</tbody></table>` : '<p class="note">No finished matches yet.</p>'}</section>
+    <section class="section"><h2>Recent matches</h2>${d.history.length ? `<table class="wt"><thead><tr><th scope="col">Date</th><th scope="col">Opponents</th><th scope="col">Finish</th><th scope="col">Points</th><th scope="col">Final table</th></tr></thead><tbody>${d.history.map((h) => `<tr><td>${fmtDate(h.at)}</td><td>${h.opponents.map(esc).join(', ')}</td><td>${h.won ? `${ICON_CUP} ` : ''}${ord(h.pos)} of ${h.players}</td><td>${h.total}</td><td>${resultsLink(h.code, h.no, 'View')}</td></tr>`).join('')}</tbody></table>` : '<p class="note">No finished matches yet.</p>'}</section>
     <p class="note">Stats are tied to this browser (and the name you played under). Rounds count once a round has ended.</p></div>`;
 }
 function trophiesHTML() {
@@ -182,11 +271,11 @@ function trophiesHTML() {
   if (mp.error) return `<p class="err">${esc(mp.error)}</p>`;
   const d = mp.data ?? { trophies: [], badges: [] };
   return `${mpNav('trophies')}<p class="prose">Every league title ${esc(d.name ?? 'you')} won${d.trophies.length ? ` · <b>${d.trophies.length}</b> in the cabinet` : ''}.</p>
-    <div class="trophies">${d.trophies.length ? d.trophies.map((t) => `<div class="trophy${t.perfect ? ' perfect' : ''}"><div class="cup" aria-hidden="true">🏆</div><div class="tt">League champion</div>
+    <div class="trophies">${d.trophies.length ? d.trophies.map((t) => `<div class="trophy${t.perfect ? ' perfect' : ''}"><div class="cup">${ICON_CUP}</div><div class="tt">League champion</div>
       <div class="td">${fmtDate(t.at)} · Room ${esc(t.code)}</div><div class="tp"><b>${t.total}</b> pts</div>
       <div class="td">${t.runnerUp ? `won by ${t.margin} pts over ${esc(t.runnerUp)}` : 'unopposed'}</div><div class="td">vs ${t.opponents.map(esc).join(', ') || '—'}</div>
       ${t.perfect ? '<div class="tag2">Perfect match</div>' : ''}<div class="td">${resultsLink(t.code, t.no, 'Final table')}</div></div>`).join('') : '<p class="note">No titles yet. Win a 10-round match to lift your first trophy.</p>'}</div>
-    <section class="section"><h2>Milestones</h2><ul class="badges">${d.badges.map((b) => `<li class="${b.earned ? 'earned' : 'locked'}" title="${esc(b.desc)}"><span class="bi" aria-hidden="true">${b.earned ? '🏅' : '🔒'}</span><b>${esc(b.label)}</b><small>${esc(b.desc)}</small></li>`).join('')}</ul></section>`;
+    <section class="section"><h2>Milestones</h2><ul class="badges">${d.badges.map((b) => `<li class="${b.earned ? 'earned' : 'locked'}" title="${esc(b.desc)}"><span class="bi" aria-hidden="true">${b.earned ? '✓' : '–'}</span><b>${esc(b.label)}</b><small>${esc(b.desc)}</small></li>`).join('')}</ul></section>`;
 }
 function savedResultsHTML() {
   const sv = S.saved ?? {};
@@ -195,7 +284,7 @@ function savedResultsHTML() {
   const d = sv.data; const n = Math.max(...d.rows.map((r) => r.rounds.length), 0);
   return `<p class="prose">Room <b>${esc(d.code)}</b>, match ${d.no} · ${fmtDate(d.updatedAt)} · ${d.phase === 'final' ? `<b>${esc(d.champion)}</b> won the title with ${d.championPts} pts${d.championWhy ? ` (${esc(d.championWhy)})` : ''}` : `in progress, round ${d.round}`}.</p>
     <div class="scroll"><table class="wt league full"><thead><tr><th scope="col">Pos</th><th scope="col">Player</th>${Array.from({ length: n }, (_, i) => `<th scope="col">R${i + 1}</th>`).join('')}<th scope="col">Won</th><th scope="col">Total</th></tr></thead><tbody>
-    ${d.rows.map((r) => `<tr class="${r.pos === 1 ? 'lead' : ''}"><td>${d.phase === 'final' && r.pos === 1 ? '🏆' : ord(r.pos)}</td><td>${esc(r.name)}${r.left ? ' <span class="muted">(left)</span>' : ''}</td>${Array.from({ length: n }, (_, i) => `<td>${r.rounds[i] ?? ''}</td>`).join('')}<td>${r.roundsWon}</td><td><strong>${r.total}</strong></td></tr>`).join('')}</tbody></table></div>
+    ${d.rows.map((r) => `<tr class="${r.pos === 1 ? 'lead' : ''}"><td>${d.phase === 'final' && r.pos === 1 ? ICON_CUP : ord(r.pos)}</td><td>${esc(r.name)}${r.left ? ' <span class="muted">(left)</span>' : ''}</td>${Array.from({ length: n }, (_, i) => `<td>${r.rounds[i] ?? ''}</td>`).join('')}<td>${r.roundsWon}</td><td><strong>${r.total}</strong></td></tr>`).join('')}</tbody></table></div>
     ${mpNav('')}`;
 }
 
@@ -290,9 +379,14 @@ function revealStageHTML(rv, { doneLine, note = '' }) {
   const { r, cards } = rv; const scene = revealScene(rv);
   const shown = new Set(rv.order.slice(0, scene.suits));
   const { cur, line } = revealLine(r, scene, doneLine);
-  return `<div class="above"><div class="score" style="opacity:${scene.name ? 1 : 0}"><h1>${r.hand}</h1><p class="pts"><span data-to="${scene.points}">${Math.min(countShown, scene.points)}</span> pts</p><p class="line">${line}</p>
+  return `<div class="stage"><div class="stage-main"><div class="above"><div class="score" style="opacity:${scene.name ? 1 : 0}"><h1>${r.hand}</h1><p class="pts"><span data-to="${scene.points}">${Math.min(countShown, scene.points)}</span> pts</p><p class="line">${line}</p>
       <p class="pb">${scene.done ? note : ''}</p></div></div>
-    <div class="grid">${cards.map((c, i) => cardHTML(c, { suit: shown.has(i) ? rv.suitAt[i] : null, hl: cur?.cards.includes(i) })).join('')}</div>`;
+    ${boardHTML(cards.map((c, i) => cardHTML(c, { suit: shown.has(i) ? rv.suitAt[i] : null, hl: cur?.cards.includes(i) })).join(''), revealLinks(r, scene, cur))}</div></div>`;
+}
+// Lines for every match tallied so far: the one being counted is bright and draws in, earlier ones stay faint.
+function revealLinks(r, scene, cur) {
+  const n = scene.done || scene.bonus ? r.matches.length : scene.matches;
+  return r.matches.slice(0, n).map((m) => ({ c: m.cards, p: m.points, s: scene.done ? 'done' : m === cur ? 'on' : 'past' }));
 }
 function revealLine(r, scene, doneText) {
   const cur = scene.done || scene.bonus ? null : r.matches[scene.matches - 1];
@@ -304,9 +398,9 @@ function soloHTML() {
   const cards = g.hand.map((id) => g.pool.byId.get(id));
   const remaining = 10 - g.keeps.reduce((s, k) => s + 5 - k.length, 0);
   if (!g.done) {
-    return { body: `<div class="above">${discardsHTML(2 - g.keeps.length)}</div>
-      <div class="grid">${cards.map((c, i) => cardHTML(c, { idx: i, toggle: true, discarded: g.selected.includes(i), info: true })).join('')}</div>
-      <div class="below"><div class="bar"><div class="pilewrap">${pileHTML(remaining)}</div><div class="buttons"><button class="btn" data-act="stand">Stand</button><button class="btn primary" data-act="discard" ${g.selected.length ? '' : 'disabled'}>${g.selected.length ? `Discard ${g.selected.length}` : 'Select cards'}</button></div></div></div>`, after: '' };
+    return { body: `<div class="stage"><div class="stage-main"><div class="above"><div class="boardhead">${discardsHTML(2 - g.keeps.length)}<p class="hint">Tap cards to swap them out.</p></div></div>
+      ${boardHTML(cards.map((c, i) => cardHTML(c, { idx: i, toggle: true, discarded: g.selected.includes(i), info: true })).join(''))}</div></div>
+      <div class="below"><div class="bar"><p class="problem">${g.selected.length ? `Swap ${g.selected.length}, keep ${5 - g.selected.length}` : '&nbsp;'}</p><div class="pilewrap">${pileHTML(remaining)}</div><div class="buttons"><button class="btn" data-act="discard" ${g.selected.length ? '' : 'disabled'}>${g.selected.length ? `Swap ${g.selected.length}` : 'Swap'}</button><button class="btn primary" data-act="stand">Lock in</button></div></div></div>`, after: '' };
   }
   const r = g.result; const scene = revealScene(g.rv);
   const title = g.mode === 'daily' ? g.date : 'Random';
@@ -370,7 +464,7 @@ function maybeReveal(st) {
 function revealHTML(st) {
   const m = st.match;
   return `${revealStageHTML(S.reveal, { doneLine: `Your round ${m.last.round} score`, note: 'Results next…' })}
-    <div class="below"><div class="bar"><p class="problem muted">Round ${m.last.round} of ${st.rounds} · results next</p><div class="pilewrap"></div><div class="buttons"><span></span><button class="btn" data-act="skipreveal">Skip to results</button></div></div></div>`;
+    <div class="below"><div class="bar"><p class="problem muted">Round ${m.last.round} of ${st.rounds} · results next</p><div class="pilewrap"></div><div class="buttons one"><button class="btn" data-act="skipreveal">Skip to results</button></div></div></div>`;
 }
 function lobbyHTML() {
   return pageHead('Play with friends') + `<div class="form">
@@ -383,8 +477,8 @@ function lobbyHTML() {
 const ord = (n) => n + ({ 1: 'st', 2: 'nd', 3: 'rd' }[n % 100 > 10 && n % 100 < 14 ? 0 : n % 10] ?? 'th');
 function leagueTableHTML(m, { final = false } = {}) {
   const rows = m.table;
-  return `<table class="wt league"><thead><tr><th scope="col">Pos</th><th scope="col">Player</th><th scope="col">Round ${m.round}</th><th scope="col">Rounds won</th><th scope="col">Best</th><th scope="col">Total</th></tr></thead><tbody>
-    ${rows.map((r) => `<tr class="${r.pos === 1 ? 'lead' : ''}"><td>${final && r.pos === 1 ? '🏆' : ord(r.pos)}</td><td>${esc(r.name)}${r.left ? ' <span class="muted">(left)</span>' : ''}</td><td>+${r.roundScore}</td><td>${r.roundsWon}</td><td>${r.best}</td><td><strong>${r.total}</strong></td></tr>`).join('')}
+  return `<table class="wt league"><thead><tr><th scope="col">Pos</th><th scope="col">Player</th><th scope="col">Rd ${m.round}</th><th scope="col">Won</th><th scope="col">Best</th><th scope="col">Total</th></tr></thead><tbody>
+    ${rows.map((r) => `<tr class="${r.pos === 1 ? 'lead' : ''}"><td>${final && r.pos === 1 ? ICON_CUP : ord(r.pos)}</td><td>${esc(r.name)}${r.left ? ' <span class="muted">(left)</span>' : ''}</td><td>+${r.roundScore}</td><td>${r.roundsWon}</td><td>${r.best}</td><td><strong>${r.total}</strong></td></tr>`).join('')}
   </tbody></table>`;
 }
 // After the reveal: 1) round results (every player's final hand and score), 2) the league table, then the
@@ -392,8 +486,8 @@ function leagueTableHTML(m, { final = false } = {}) {
 function roundResultsHTML(m, { details = false } = {}) {
   const L = m.last; if (!L) return '';
   if (!details) return `<section class="roundres"><h2 class="tablehead">Round ${L.round} results</h2><table class="wt rr"><thead><tr><th scope="col"></th><th scope="col">Player</th><th scope="col">Hand</th><th scope="col">Final cards</th><th scope="col">Pts</th></tr></thead><tbody>
-    ${L.results.map((p, i) => `<tr class="${i === 0 ? 'lead' : ''}"><td>${i === 0 ? '⭐' : ord(i + 1)}</td><td>${esc(p.name)}</td><td>${p.hand}</td><td class="fc">${p.cards.map((c, j) => `<span class="${p.newIdx.includes(j) ? 'isnew' : ''}">${esc(cardName(c))}</span>`).join(', ')}</td><td><strong>${p.points}</strong></td></tr>`).join('')}</tbody></table></section>`;
-  return `<section class="section"><h2>Round ${L.round} details</h2>${L.results.map((p, i) => `<div class="player-res"><h3><span>${i === 0 ? '⭐ ' : ''}${esc(p.name)} · ${p.hand}</span><span class="${i === 0 ? 'win' : 'muted'}">${p.points} pts</span></h3>
+    ${L.results.map((p, i) => `<tr class="${i === 0 ? 'lead' : ''}"><td>${ord(i + 1)}</td><td>${esc(p.name)}</td><td>${p.hand}</td><td class="fc">${p.cards.map((c, j) => `<span class="${p.newIdx.includes(j) ? 'isnew' : ''}">${esc(cardName(c))}</span>`).join(', ')}</td><td><strong>${p.points}</strong></td></tr>`).join('')}</tbody></table></section>`;
+  return `<section class="section"><h2>Round ${L.round} details</h2>${L.results.map((p, i) => `<div class="player-res"><h3><span>${esc(p.name)} · ${p.hand}</span><span class="${i === 0 ? 'win' : 'muted'}">${p.points} pts</span></h3>
     <div class="mini">${p.cards.map((c, j) => cardHTML(c, { badge: p.newIdx.includes(j) ? 'New' : null })).join('')}</div>${matchTable(p, p.cards)}</div>`).join('')}</section>`;
 }
 function readyPanelHTML(st) {
@@ -404,6 +498,11 @@ function readyPanelHTML(st) {
       <div class="rc-count"><b>${rc.ready}/${rc.total}</b> ready</div><div class="rc-wait">${waitText}</div>
       <ul class="rc-list">${st.seats.map((s) => `<li class="${s.readyUp ? 'ok' : 'no'}">${s.readyUp ? '✓' : '…'} ${esc(s.name)}${s.isYou ? ' (you)' : ''}</li>`).join('')}</ul>
       ${count ? `<div class="rc-deal">${count}</div>` : ''}</div>` };
+}
+// Compact league table beside the board during a round (desktop).
+function sideTableHTML(m) {
+  if (!m?.table?.length) return '';
+  return `<aside class="side"><h3>League table</h3><table class="mt"><thead><tr><th scope="col"></th><th scope="col">Player</th><th scope="col">W</th><th scope="col">Pts</th></tr></thead><tbody>${m.table.map((r) => `<tr><td>${r.pos}.</td><td>${esc(r.name)}</td><td>${r.roundsWon}</td><td>${r.total}</td></tr>`).join('')}</tbody></table></aside>`;
 }
 function roomHTML() {
   const st = S.room; if (!st) return { body: '<p class="center-msg">Joining…</p>', after: '' };
@@ -418,33 +517,33 @@ function roomHTML() {
     return `<div class="seat ${!playing && s.readyUp ? 'is-ready' : ''} ${playing && s.lockedIn ? 'is-ready' : ''}" title="${!playing ? (s.readyUp ? `${esc(s.name)} is ready` : `Waiting for ${esc(s.name)} to ready up`) : s.lockedIn ? `${esc(s.name)} is locked in` : s.status === 'Spectating' ? `${esc(s.name)} is spectating` : `${esc(s.name)} is still playing`}"><div class="nm">${esc(s.name)}${s.isYou ? ' (you)' : ''}${s.isHost ? ' ★' : ''}</div><div class="ch">${s.total != null && !S.reveal ? `${s.total} pts` : '&nbsp;'}</div><div class="st">${status}${s.connected ? '' : ' <span class="off">· offline</span>'}</div></div>`;
   }).join('');
   const invite = `${location.origin}/room/${st.code}`;
-  let body = `<div class="roomhead"><span>Room</span><span class="code">${st.code}</span><button class="btn small" data-act="copylink" data-link="${esc(invite)}">${S.copied ? 'Link copied' : 'Copy invite link'}</button><button class="btn small" data-act="leave">Leave</button>${m ? `<span class="muted">${m.phase === 'final' ? 'Match finished' : `Round ${m.round} of ${st.rounds}`}</span>` : ''}${S.roomError ? `<span class="err">${esc(S.roomError)}</span>` : ''}</div>
+  let body = `<div class="roomhead"><span>Room</span><span class="code">${st.code}</span><button class="btn small" data-act="copylink" data-link="${esc(invite)}">${S.copied ? 'Link copied' : 'Copy invite link'}</button><button class="btn small" data-act="leave">Leave</button>${S.roomError ? `<span class="err">${esc(S.roomError)}</span>` : ''}</div>
     <div class="seats seats-${nSeats}">${seatsHTML}</div>`;
   let after = '';
   if (playing) {
     const you = m.you;
-    const timer = m.deadline ? `<div class="timer"><i data-deadline="${m.deadline}" style="width:${Math.max(0, Math.min(100, (m.deadline - Date.now()) / st.roundMs * 100))}%"></i></div><span class="secs" data-left="${m.deadline}" title="Time left: you auto-stand at 0">${Math.max(0, Math.ceil((m.deadline - Date.now()) / 1000))}s</span>` : '';
+    const side = sideTableHTML(m);
     if (!you) {
       body += `<div class="above"><p class="center-msg">Round ${m.round} in progress. You'll play in the next match.</p></div>`;
     } else if (!you.done) {
       const sel = S.selected;
-      body += `<div class="above">${discardsHTML(you.discardsLeft)}<p class="hint">Tap the cards you want to <strong>swap out</strong>. Cards you don't tap are kept and never change.</p></div>
-        <div class="grid">${you.hand.map((c, i) => cardHTML(c, { idx: i, toggle: true, discarded: sel.includes(i), info: true, badge: !sel.includes(i) && you.lastNew.includes(i) ? 'New' : null })).join('')}</div>
-        <div class="below"><div class="bar"><p class="problem">${sel.length ? `Swap ${sel.length}, keep ${5 - sel.length}` : `Round ${m.round} of ${st.rounds}`}</p>${timer}<div class="pilewrap">${pileHTML(you.deckLeft)}</div><div class="buttons"><button class="btn" data-act="mpstand" ${S.busy ? 'disabled' : ''}>Stand</button><button class="btn primary" data-act="mpdiscard" ${sel.length && !S.busy ? '' : 'disabled'}>${sel.length ? `Discard ${sel.length}` : 'Select cards'}</button></div></div></div>`;
+      body += `<div class="stage"><div class="stage-main"><div class="above"><div class="boardhead">${discardsHTML(you.discardsLeft)}<p class="hint">Tap cards to <strong>swap out</strong>. Cards you keep never change.</p></div></div>
+        ${boardHTML(you.hand.map((c, i) => cardHTML(c, { idx: i, toggle: true, discarded: sel.includes(i), info: true, badge: !sel.includes(i) && you.lastNew.includes(i) ? 'New' : null })).join(''))}</div>${side}</div>
+        <div class="below"><div class="bar"><p class="problem">${sel.length ? `Swap ${sel.length}, keep ${5 - sel.length}` : '&nbsp;'}</p><div class="pilewrap">${pileHTML(you.deckLeft)}</div><div class="buttons"><button class="btn" data-act="mpdiscard" ${sel.length && !S.busy ? '' : 'disabled'}>${sel.length ? `Swap ${sel.length}` : 'Swap'}</button><button class="btn primary" data-act="mpstand" ${S.busy ? 'disabled' : ''}>Lock in</button></div></div></div>`;
     } else {
-      body += `<div class="above"><div class="score"><h1>Locked in ✓</h1><p class="line lockwait" role="status">Locked in, waiting for: ${m.waitingFor.map(esc).join(', ')}</p><p class="pb">Scores are revealed for everyone at the same time when the last player locks in.</p></div></div>
-        <div class="grid">${you.hand.map((c, i) => cardHTML(c, { badge: you.lastNew.includes(i) ? 'New' : null })).join('')}</div>
-        <div class="below"><div class="bar"><p class="problem muted">Round ends when everyone is locked in.</p>${timer}<div class="pilewrap">${pileHTML(you.deckLeft)}</div><div class="buttons"></div></div></div>`;
+      body += `<div class="stage"><div class="stage-main"><div class="above"><div class="score locked"><h1>Locked in ✓</h1><p class="line lockwait" role="status">Locked in, waiting for: ${m.waitingFor.map(esc).join(', ')}</p><p class="pb">Scores are revealed for everyone at the same time when the last player locks in.</p></div></div>
+        ${boardHTML(you.hand.map((c, i) => cardHTML(c, { badge: you.lastNew.includes(i) ? 'New' : null })).join(''))}</div>${side}</div>
+        <div class="below"><div class="bar"><p class="problem muted">Round ends when everyone is locked in.</p><div class="pilewrap">${pileHTML(you.deckLeft)}</div><div class="buttons one"><button class="btn primary" disabled>Locked in ✓</button></div></div></div>`;
     }
   } else if (S.reveal && m?.last && S.reveal.key === `${st.code}:${m.no}:${m.last.round}`) {
     body += revealHTML(st);
   } else {
     const { panel, rc, waitText } = readyPanelHTML(st);
     let head = '';
-    if (m?.phase === 'final') head = `<div class="score"><h1>🏆 ${esc(m.champion)} is the champion</h1><p class="pts"><span>${m.championPts ?? m.table[0]?.total ?? 0}</span> pts</p><p class="line">Final table after ${m.round} rounds${m.championWhy ? ` · ${esc(m.championWhy)}` : ''}</p><p class="line finallinks">${resultsLink(st.code, m.no, 'Permanent link to this table')} · <a href="/stats" data-act="mpage" data-page="mpstats">Your stats</a> · <a href="/trophies" data-act="mpage" data-page="trophies">Trophy room</a></p></div>`;
+    if (m?.phase === 'final') head = `<div class="score"><h1>${ICON_CUP} ${esc(m.champion)} is the champion</h1><p class="pts"><span>${m.championPts ?? m.table[0]?.total ?? 0}</span> pts</p><p class="line">Final table after ${m.round} rounds${m.championWhy ? ` · ${esc(m.championWhy)}` : ''}</p><p class="line finallinks">${resultsLink(st.code, m.no, 'Permanent link to this table')} · <a href="/stats" data-act="mpage" data-page="mpstats">Your stats</a> · <a href="/trophies" data-act="mpage" data-page="trophies">Trophy room</a></p></div>`;
     else if (m?.last) head = `<div class="score"><h1>Round ${m.last.round} of ${st.rounds}</h1><p class="line">${esc(m.last.winner)} wins the round with ${m.last.results[0]?.points ?? 0} pts</p></div>`;
     body += `<div class="above">${head}${m?.last ? roundResultsHTML(m) : ''}${m ? `<h2 class="tablehead">${m.phase === 'final' ? 'Final table' : 'League table'}</h2>${leagueTableHTML(m, { final: m.phase === 'final' })}` : ''}${panel}</div>
-      <div class="below"><div class="bar"><p class="problem muted" title="${esc(waitText)}">${rc.ready}/${rc.total} ready${rc.waitingFor.length && !rc.allReady ? ` · waiting for ${rc.waitingFor.map(esc).join(', ')}` : ''}</p><div class="pilewrap"></div><div class="buttons"><span></span><button class="btn ${meSeat?.readyUp ? '' : 'primary'}" data-act="ready" data-ready="${meSeat?.readyUp ? 0 : 1}" aria-pressed="${!!meSeat?.readyUp}">${meSeat?.readyUp ? '✓ Ready (click to cancel)' : `Ready · ${esc(rc.next)}`}</button></div></div></div>`;
+      <div class="below"><div class="bar"><p class="problem muted" title="${esc(waitText)}">${rc.ready}/${rc.total} ready${rc.waitingFor.length && !rc.allReady ? ` · waiting for ${rc.waitingFor.map(esc).join(', ')}` : ''}</p><div class="pilewrap"></div><div class="buttons one"><button class="btn ${meSeat?.readyUp ? '' : 'primary'}" data-act="ready" data-ready="${meSeat?.readyUp ? 0 : 1}" aria-pressed="${!!meSeat?.readyUp}">${meSeat?.readyUp ? '✓ Ready (click to cancel)' : `Ready · ${esc(rc.next)}`}</button></div></div></div>`;
     if (m) after = roundResultsHTML(m, { details: true });
   }
   after += `<div class="log" aria-live="polite">${st.log.slice().reverse().map((l) => `<div>${esc(l.msg)}</div>`).join('')}</div><p class="foot">Text from Wikipedia, CC BY-SA. Traits from Wikidata.</p>`;
@@ -521,8 +620,8 @@ $root.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.target.id
 addEventListener('keydown', (e) => { if (e.key === 'Escape' && (S.modal || S.menu)) { S.modal = null; S.menu = false; render(); } });
 // Countdown bars without full re-renders.
 setInterval(() => {
-  document.querySelectorAll('[data-deadline]').forEach((el) => { el.style.width = `${Math.max(0, Math.min(100, (+el.dataset.deadline - Date.now()) / (S.room?.roundMs ?? 60000) * 100))}%`; });
-  document.querySelectorAll('[data-left]').forEach((el) => { el.textContent = `${Math.max(0, Math.ceil((+el.dataset.left - Date.now()) / 1000))}s`; });
+  document.querySelectorAll('[data-deadline]').forEach((el) => { el.style.width = `${Math.max(0, Math.min(100, (+el.dataset.deadline - Date.now()) / (S.room?.roundMs ?? 90000) * 100))}%`; });
+  document.querySelectorAll('[data-left]').forEach((el) => { const ms = +el.dataset.left - Date.now(); el.textContent = clock(ms); el.classList.toggle('low', ms < 15500); });
   document.querySelectorAll('[data-next]').forEach((el) => { el.textContent = `${el.dataset.label ?? 'Next hand in'} ${Math.max(0, Math.ceil((+el.dataset.next - Date.now()) / 1000))}s`; });
 }, 1000);
 addEventListener('popstate', () => {

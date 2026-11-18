@@ -9,6 +9,15 @@ position, World Cup played, award, birthplace, decade…). Rarer traits score mo
 * **Play with friends** — online rooms for 2–6 players: a **10-round match** of normal FootDraw rounds with a
   league table; the top of the table after round 10 is champion.
 
+## Look: "Tactics Board"
+
+Minimalist and football-first (mockup in `design/tactics-board-mockup.jpg`): a deep matte pitch-green background with
+faint white pitch markings (landscape on wide screens, portrait on phones), white Inter/system type, flat white cards
+with a small circular photo, the name and a one-line tag. Your hand sits on the board like a formation (1-2-1-1;
+a tidy 3 + 2 grid on phones). During the reveal, thin white lines join the matching cards with a small `+N` label as
+each match tallies (drawn from the same scoring/tally data), before the round results and the league table.
+The top bar shows `Round X / 10` and the 1:30 clock; the main action is a white pill **Lock in** button.
+
 ## Run it
 
 ```bash
@@ -99,7 +108,7 @@ of its next decks and matches. The browser only receives the cards it plays with
    carries the hand you were looking at and the discard step, so stale or double-clicked requests are rejected.
 5. Standing, using both discards or timing out **locks you in**: your screen says “Locked in, waiting for: …” and every
    seat shows *Locked in ✓* or *Playing…* to everyone. A round ends when everyone is locked in, and then every player's
-   reveal starts at the same moment. The round timer is **1 minute** (`ROUND_MS`, shown as a bar and a seconds countdown); anyone still playing auto-stands with their current hand.
+   reveal starts at the same moment. The round timer is **1:30** (`ROUND_MS`, 90 s, shown as a m:ss clock in the top bar with a thin progress line); anyone still playing is auto-locked in with their current hand.
    First, **your own hand's points tally up** (the same reveal as solo: suits pop in, each shared trait adds its
    points, then the hand bonus, counting up to your score). **Skip to results** jumps straight on. This runs only in
    your browser (no extra network traffic) and plays once per round, not again after a reload or reconnect.

@@ -58,7 +58,7 @@ for (let round = 1; round <= 10; round++) {
       // Swap cards 2 and 4; the other three must be exactly the same afterwards.
       const before = await titles(p);
       await p.click('.slot:nth-child(2) .card'); await p.click('.slot:nth-child(4) .card');
-      if (round === 1 && who === 'A') { const secs = await p.$eval('.secs', (e) => parseInt(e.textContent, 10)); if (!(secs > 0 && secs <= 60)) throw new Error(`Round timer should be ≤ 60s, shows ${secs}`); }
+      if (round === 1 && who === 'A') { const t = (await p.textContent('.topbar .secs')).trim(); const [mm, ss] = t.split(':').map(Number); const secs = mm * 60 + ss; if (!/^\d:\d\d$/.test(t) || !(secs > 60 && secs <= 90)) throw new Error(`Round timer should start at 1:30 (m:ss), shows ${t}`); if (!/Round 1 \/ 10/.test(await p.textContent('.topbar .tb-mid'))) throw new Error('Top bar should show Round 1 / 10'); }
       if (round === 1 && who === 'A') { await p.waitForTimeout(300); await p.screenshot({ path: 'screenshots/4-match-round.png', fullPage: true }); }
       await p.click('[data-act="mpdiscard"]');
       await p.waitForFunction((prev) => { const t = [...document.querySelectorAll('.grid .ttl')].map((e) => e.textContent); return t[1] !== prev[1] || t[3] !== prev[3]; }, before, { timeout: 10000 });
@@ -93,12 +93,19 @@ for (let round = 1; round <= 10; round++) {
     // Same component as solo: identical structure (score block with hand, counting points, line, note; 5-card grid).
     const shape = await a.$eval('.screen', (e) => [!!e.querySelector('.above .score h1'), !!e.querySelector('.score .pts span[data-to]'), !!e.querySelector('.score .line'), !!e.querySelector('.score .pb'), e.querySelectorAll('.grid .slot').length].join());
     if (shape !== 'true,true,true,true,5') throw new Error('Multiplayer reveal is not the solo reveal component: ' + shape);
-    const seen = [];
+    const seen = []; let lineShots = 0, sawLines = false;
     for (let i = 0; i < 100 && await a.$('[data-act="skipreveal"]'); i++) {
       const v = await a.$eval('.score .pts span', (e) => +e.textContent).catch(() => null); if (v != null && v !== seen.at(-1)) seen.push(v);
-      if (i === 14) await a.screenshot({ path: 'screenshots/4b-round-reveal.png', fullPage: true });
+      // Match lines: thin lines between the matching cards with a "+N" label, drawn on the board as each match tallies.
+      const on = await a.$$eval('.board svg.links .ln.on path', (e) => e.length).catch(() => 0);
+      if (on) sawLines = true;
+      if (on && !lineShots++) { await a.waitForFunction(() => [...document.querySelectorAll('.board .lb.on, .board .lb.done')].some((g) => getComputedStyle(g).opacity === '1'), null, { timeout: 3000 }).catch(() => {}); await a.waitForTimeout(150); await a.screenshot({ path: 'screenshots/4b-round-reveal.png', fullPage: true }); }
+      if (i === 14 && !lineShots) await a.screenshot({ path: 'screenshots/4b-round-reveal.png', fullPage: true });
       await a.waitForTimeout(120);
     }
+    const nMatches = await a.evaluate(() => { const m = window.__lastState?.match; return m?.last?.results[m.lastYou]?.matches.length ?? 0; });
+    if (nMatches && !sawLines) throw new Error(`Reveal had ${nMatches} matches but no match lines were drawn`);
+    console.log(`match lines: ${nMatches} match(es), lines drawn: ${sawLines}`);
     await a.waitForSelector('table.league', { timeout: 15000 });
     const mine = await a.evaluate(() => { const m = window.__lastState?.match; return m?.last?.results[m.lastYou]?.points; });
     if (seen.some((v, i) => i && v < seen[i - 1])) throw new Error(`Reveal tally went down: ${seen}`);

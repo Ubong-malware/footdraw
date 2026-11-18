@@ -16,7 +16,7 @@ const ROUNDS = +(process.env.ROUNDS ?? 10);
 const DECK_SIZE = 15;                                         // solo decks and 2–4 player rounds
 // Each round's shared deck: 15 cards for 2–4 players, 25 for 5–6 (more cards so big tables don't all draw the same).
 const deckSizeFor = (players) => (players >= 5 ? 25 : 15);
-const ROUND_MS = +(process.env.ROUND_MS ?? 60000);            // 1-minute round timer; unfinished players auto-stand
+const ROUND_MS = +(process.env.ROUND_MS ?? 90000);            // 1:30 round timer; unfinished players auto-lock in
 // Once every required player is ready, a short countdown runs (cancelled if anyone un-readies or joins).
 const READY_COUNTDOWN_MS = +(process.env.READY_COUNTDOWN_MS ?? 3000);
 

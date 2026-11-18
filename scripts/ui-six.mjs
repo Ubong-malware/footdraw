@@ -12,6 +12,7 @@ for (const [i, n] of names.entries()) {
   const p = await ctx.newPage(); p.on('pageerror', (e) => errors.push(`${n}: ${e.message}`)); pages.push(p);
 }
 const [a] = pages;
+await pages[1].goto(URL); await pages[1].waitForTimeout(400); await pages[1].screenshot({ path: 'screenshots/0b-home-mobile.png' });
 await a.goto(URL); await a.click('text=Play with friends'); await a.fill('#nm', names[0]); await a.click('[data-act="create"]');
 await a.waitForSelector('.roomhead .code'); const code = (await a.textContent('.roomhead .code')).trim();
 for (const [i, p] of pages.slice(1).entries()) { await p.goto(`${URL}/room/${code}`); await p.fill('#nm', names[i + 1]); await p.click('[data-act="join"]'); await p.waitForSelector('.roomhead .code'); }
@@ -21,14 +22,23 @@ if (seatCount !== 6) throw new Error('expected 6 seats, got ' + seatCount);
 for (const p of pages) await p.click('[data-act="ready"]');
 for (const p of pages) await p.waitForSelector('[data-act="mpstand"]', { timeout: 15000 });
 const pile = await a.textContent('.pile .top'); if (pile.trim() !== '20') throw new Error('25-card deck should leave 20 in the pile, shows ' + pile);
+await pages[1].click('.slot:nth-child(3) .card'); await pages[1].waitForTimeout(300); await pages[1].screenshot({ path: 'screenshots/4c-match-round-mobile.png' }); await pages[1].click('.slot:nth-child(3) .card');
+const tb = (await pages[1].textContent('.topbar')).replace(/\s+/g, ' '); if (!/Round 1 \/ 10/.test(tb) || !/1:[23]\d/.test(tb)) throw new Error('Mobile top bar should show Round 1 / 10 and the 1:30 clock: ' + tb);
 // Five lock in; check badges with one still playing.
 for (const p of pages.slice(0, 5)) await p.click('[data-act="mpstand"]');
 await pages[5].waitForFunction(() => (document.querySelector('.seats')?.textContent.match(/Locked in ✓/g) ?? []).length === 5);
 await a.screenshot({ path: 'screenshots/14a-six-locked-in.png', fullPage: true });
 await pages[1].screenshot({ path: 'screenshots/14b-six-locked-in-mobile.png', fullPage: true });
 await pages[5].click('[data-act="mpstand"]');
-await a.waitForSelector('[data-act="skipreveal"]'); await a.waitForTimeout(1200);
-await a.screenshot({ path: 'screenshots/14c-six-reveal.png', fullPage: true });
+await a.waitForSelector('[data-act="skipreveal"]');
+// Screenshot a desktop player whose hand has matches once the match lines (thin lines + "+N" labels) are drawn.
+const nMatch = async (p) => p.evaluate(() => { const m = window.__lastState?.match; return m?.last?.results[m.lastYou]?.matches.length ?? 0; });
+const scored = await Promise.all(pages.map(nMatch));
+const best = scored.reduce((bi, v, i) => (i !== 1 && v > scored[bi] ? i : bi), 0), shot = pages[best];
+await shot.waitForSelector('.board svg.links .ln.on', { timeout: 8000 }).then(() => shot.waitForFunction(() => [...document.querySelectorAll('.board .lb.on, .board .lb.done')].some((g) => getComputedStyle(g).opacity === '1'), null, { timeout: 3000 })).then(() => shot.waitForTimeout(150)).catch(() => {});
+await shot.screenshot({ path: 'screenshots/14c-six-reveal.png', fullPage: true });
+if (await nMatch(shot) && !(await shot.$('.board svg.links .ln'))) throw new Error('reveal: no match lines drawn');
+await pages[1].screenshot({ path: 'screenshots/14f-six-reveal-mobile.png' });
 for (const p of pages) await p.click('[data-act="skipreveal"]').catch(() => {});
 await a.waitForSelector('table.league');
 // Results come before the table.

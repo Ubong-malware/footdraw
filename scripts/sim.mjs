@@ -14,6 +14,7 @@ function client(name, token = randomBytes(16).toString('hex')) {
   const c = { name, token, s, state: null, busy: false };
   s.on('state', (st) => {
     c.state = st;
+    assert(st.roundMs === +(process.env.ROUND_MS ?? 90000), `round timer should be 90000 ms (1:30), got ${st.roundMs}`);
     const yu = st.match?.you;
     if (yu) {
       const want = N >= 5 ? 25 : 15;

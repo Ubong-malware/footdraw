@@ -2,18 +2,43 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>FootDraw</title>
-    <meta name="description" content="Five-card draw with Wikipedia football articles as cards. Play solo or a 10-round match with up to 3 friends." />
+    <meta name="description" content="Five-card draw with Wikipedia football articles as cards. Play solo or a 10-round league with up to 5 friends." />
+    <meta name="theme-color" content="#1c4630" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Libertinus+Serif:wght@400;600;700&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/style.css" />
     <script src="/socket.io/socket.io.js" defer></script>
     <script type="module" src="/app.js"></script>
   </head>
   <body>
+    <!-- The tactics board: faint pitch markings behind everything (landscape on wide screens, portrait on phones). -->
+    <div class="pitch" aria-hidden="true">
+      <svg class="pitch-h" viewBox="-40 -40 1130 760" preserveAspectRatio="xMidYMid meet">
+        <g fill="none" stroke="currentColor" stroke-width="1.5" vector-effect="non-scaling-stroke">
+          <rect x="0" y="0" width="1050" height="680" />
+          <path d="M525 0v680" /><circle cx="525" cy="340" r="91.5" />
+          <path d="M0 138.4h165v403.2H0M0 248.4h55v183.2H0M1050 138.4H885v403.2h165M1050 248.4H995v183.2h55" />
+          <path d="M165 266.9a91.5 91.5 0 0 1 0 146.2M885 266.9a91.5 91.5 0 0 0 0 146.2" />
+          <path d="M0 10a10 10 0 0 0 10-10M1040 0a10 10 0 0 0 10 10M1050 670a10 10 0 0 0-10 10M10 680a10 10 0 0 0-10-10" />
+        </g>
+        <g fill="currentColor"><circle cx="525" cy="340" r="3" /><circle cx="110" cy="340" r="3" /><circle cx="940" cy="340" r="3" /></g>
+      </svg>
+      <svg class="pitch-v" viewBox="-30 -30 740 1110" preserveAspectRatio="xMidYMid meet">
+        <g transform="translate(680 0) rotate(90)">
+          <g fill="none" stroke="currentColor" stroke-width="1.5" vector-effect="non-scaling-stroke">
+            <rect x="0" y="0" width="1050" height="680" />
+            <path d="M525 0v680" /><circle cx="525" cy="340" r="91.5" />
+            <path d="M0 138.4h165v403.2H0M0 248.4h55v183.2H0M1050 138.4H885v403.2h165M1050 248.4H995v183.2h55" />
+            <path d="M165 266.9a91.5 91.5 0 0 1 0 146.2M885 266.9a91.5 91.5 0 0 0 0 146.2" />
+          </g>
+          <g fill="currentColor"><circle cx="525" cy="340" r="3" /><circle cx="110" cy="340" r="3" /><circle cx="940" cy="340" r="3" /></g>
+        </g>
+      </svg>
+    </div>
     <div id="root"></div>
   </body>
 </html>
