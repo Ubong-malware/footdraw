@@ -1,9 +1,11 @@
-import { BONUS, HANDS, rng, shuffle, scoreHand, bestHand, makeDeck, suitGroups, shareText } from '/shared/game.js';
+import { BONUS, HANDS, rng, shuffle, scoreHand, bestHand, suitGroups, shareText } from '/shared/game.js';
 
 const BRAND = 'FootDraw';
 const $root = document.getElementById('root');
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const wikiUrl = (t) => `https://en.wikipedia.org/wiki/${encodeURIComponent(t.replace(/ /g, '_'))}`;
+// Display name: Wikipedia titles keep their disambiguation for links; cards show the plain name.
+const cardName = (c) => (c.title ?? '').replace(/ \([^)]*\)$/, '');
 const isLogo = (u) => /logo|crest|badge|\.svg/i.test(u ?? '');
 const today = () => new Date().toLocaleDateString('en-CA');
 const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -15,7 +17,7 @@ if (!token) { token = [...crypto.getRandomValues(new Uint8Array(16))].map((b) =>
 const MODES = [
   { mode: 'daily', name: 'Daily deck', blurb: "Today's 15 cards." },
   { mode: 'random', name: 'Random deck', blurb: '15 cards from the entire football pool.' },
-  { mode: 'friends', name: 'Play with friends', blurb: '10-round match, up to 4 players.' },
+  { mode: 'friends', name: 'Play with friends', blurb: '10-round match, up to 6 players.' },
 ];
 
 const S = {
@@ -25,15 +27,21 @@ const S = {
 };
 
 // ---------- Data ----------
-let poolPromise = null;
-const loadPool = () => (poolPromise ??= fetch('/data/pool.json').then((r) => r.json()).then((d) => ({ ...d, meta: { traits: d.traits, size: d.cards.length }, byId: new Map(d.cards.map((c) => [c.id, c])) })));
+// Decks come from the server: the browser only gets the 15 cards it plays with plus the trait labels/counts needed
+// to score them (the full pool never leaves the server).
+async function fetchDeck(mode, date) {
+  const r = await fetch(mode === 'daily' ? `/api/deck?mode=daily&date=${encodeURIComponent(date)}` : '/api/deck?mode=random', { headers: { 'x-fd-token': token } });
+  if (!r.ok) throw new Error('deck');
+  return r.json();
+}
+const poolFrom = (d) => ({ meta: { traits: d.traits, size: d.size }, byId: new Map(d.cards.map((c) => [c.id, c])) });
 
 // ---------- Rendering helpers ----------
 const seen = new Set();
 function cardHTML(c, { idx, discarded, toggle, info, suit, hl, link = true, badge } = {}) {
   const fresh = !seen.has(c.id); seen.add(c.id);
   const pic = c.thumbnail ? `<img src="${esc(c.thumbnail)}" alt="" decoding="async">` : `<div class="letter" aria-hidden="true">${esc(c.title[0])}</div>`;
-  const inner = `<div class="pic ${isLogo(c.thumbnail) ? 'contain' : ''}">${pic}</div><div class="cap"><div class="ttl">${esc(c.title)}</div>${c.description ? `<div class="desc">${esc(c.description)}</div>` : ''}</div>`;
+  const inner = `<div class="pic ${isLogo(c.thumbnail) ? 'contain' : ''}">${pic}</div><div class="cap"><div class="ttl">${esc(cardName(c))}</div>${c.description ? `<div class="desc">${esc(c.description)}</div>` : ''}</div>`;
   const cls = `card ${discarded ? 'discarded' : ''} ${hl ? 'hl' : ''}`;
   const body = toggle
     ? `<button type="button" class="${cls}" data-act="toggle" data-i="${idx}" aria-pressed="${!!discarded}">${inner}</button>`
@@ -42,12 +50,12 @@ function cardHTML(c, { idx, discarded, toggle, info, suit, hl, link = true, badg
   return `<div class="slot${fresh ? ' fresh' : ''}">${body}${discarded ? '<div class="tag" aria-hidden="true">Swap out</div>' : ''}${badge ? `<div class="newb">${esc(badge)}</div>` : ''}${suit ? `<div class="suit" aria-hidden="true">${suit}</div>` : ''}${info ? `<button type="button" class="info" data-act="info" data-id="${esc(c.id)}" aria-label="About ${esc(c.title)}">i</button>` : ''}</div>`;
 }
 const pileHTML = (n) => {
-  const st = 2.5, k = Math.max(n - 1, 0);
+  const st = 2.5, k = Math.min(Math.max(n - 1, 0), 14);
   return `<div class="pile" role="img" aria-label="${n} cards left in the deck" style="padding-top:${k * st}px;padding-left:${k * st}px">${Array.from({ length: k }, (_, i) => `<div class="c s" style="top:${i * st}px;left:${i * st}px"></div>`).join('')}<div class="c top ${n === 0 ? 'empty' : ''}">${n}</div></div>`;
 };
 const discardsHTML = (left) => `<div class="discards" role="img" aria-label="${left} of 2 discards left"><span class="lbl">Remaining Discards:</span><span>${[0, 1].map((i) => `<span class="j ${i >= left ? 'used' : ''}">🃏</span>`).join('')}</span></div>`;
 const matchTable = (r, cardsByIdx) => r.matches.length ? `<table class="wt"><thead><tr><th scope="col">In common</th><th scope="col">Cards</th><th scope="col">Points</th></tr></thead><tbody>
-  ${r.matches.map((m) => `<tr><td><strong>${esc(m.label)}</strong></td><td>${m.cards.map((i) => esc(cardsByIdx[i].title)).join(', ')}</td><td>+${m.points}</td></tr>`).join('')}
+  ${r.matches.map((m) => `<tr><td><strong>${esc(m.label)}</strong></td><td>${m.cards.map((i) => esc(cardName(cardsByIdx[i]))).join(', ')}</td><td>+${m.points}</td></tr>`).join('')}
   ${BONUS[r.hand] > 0 ? `<tr><td colspan="2"><em>${r.hand} bonus</em></td><td>+${BONUS[r.hand]}</td></tr>` : ''}</tbody></table>` : '<p class="muted" style="margin-bottom:16px">Nothing in this hand had anything in common.</p>';
 
 function topbar() {
@@ -68,7 +76,7 @@ function modalHTML() {
     const c = m.card;
     const live = m.live === undefined ? '<div class="live muted">Loading live data from TheSportsDB…</div>'
       : m.live ? `<div class="live"><b>Live data · TheSportsDB</b><dl>${Object.entries(m.live).filter(([k, v]) => v && !['image', 'badge', 'website'].includes(k)).map(([k, v]) => `<dt>${esc(k[0].toUpperCase() + k.slice(1))}</dt><dd>${esc(v)}</dd>`).join('')}</dl></div>` : '';
-    return shell(c.title, `<div class="from" style="margin-bottom:0">From Wikipedia, the free encyclopedia</div><p class="body">${esc(c.extract)}</p>${['player', 'club'].includes(c.kind) ? live : ''}<p style="margin-top:10px;font-size:.9rem"><a class="link" href="${wikiUrl(c.title)}" target="_blank" rel="noopener">Read on Wikipedia</a></p>`, 'Text from Wikipedia, CC BY-SA. Live data from TheSportsDB.');
+    return shell(cardName(c), `<div class="from" style="margin-bottom:0">From Wikipedia, the free encyclopedia</div><p class="body">${esc(c.extract)}</p>${['player', 'club'].includes(c.kind) ? live : ''}<p style="margin-top:10px;font-size:.9rem"><a class="link" href="${wikiUrl(c.title)}" target="_blank" rel="noopener">Read on Wikipedia</a></p>`, 'Text from Wikipedia, CC BY-SA. Live data from TheSportsDB.');
   }
   return shell('How to play', `<div class="body">
     <p>Five-card draw with Wikipedia football articles as cards: players, clubs, national teams and tournaments. Build a hand of cards that have something in common: the same nation, club, position, World Cup, decade of birth, award, etc.</p>
@@ -76,14 +84,15 @@ function modalHTML() {
     <h3>Scoring</h3><ul><li>Every trait two or more cards share scores points.</li><li>Rarer traits score more: five players born in Rosario beat five forwards.</li><li>The most common traits, like Forward or Born in the 1980s, score little or nothing and don't count toward the hand shape.</li><li>Bigger groups score much more, plus a bonus for the shape of the hand.</li><li>What your cards share stays hidden until the end.</li></ul>
     <h3>Hands</h3><ol>${HANDS.map((h) => `<li><strong>${h} (+${BONUS[h]})</strong>: ${{ Flush: 'all five share a trait', 'Four of a Kind': 'four share a trait', 'Full House': 'three share one trait, two share another', 'Three of a Kind': 'three share a trait', 'Two Pair': 'two separate pairs', Pair: 'two share a trait', 'High Card': 'nothing shared' }[h]}</li>`).join('')}</ol>
     <h3>Play with friends: 10-round match</h3><ul>
-      <li>2–4 players per room. Share the room link or 5-letter code.</li>
+      <li>2–6 players per room. Share the room link or 5-letter code. Each round's deck has 15 cards with 2–4 players and 25 cards with 5–6 players.</li>
       <li>Everyone presses <strong>Ready</strong>; the match starts only when all players are ready, and again before every round.</li>
-      <li>Each round is a normal FootDraw game. All players get the <strong>same 15-card deck</strong> (a new deck every round), each in their own shuffle, and play at the same time: tap cards to swap out, two discards, or Stand. Cards you keep never change.</li>
-      <li>A round ends when everyone has finished (2 minutes max; anyone still playing auto-stands).</li>
-      <li>When the round ends, your hand's points tally up, then everyone's hands and the table appear (or tap <strong>Skip to results</strong>).</li>
+      <li>Each round is a normal FootDraw game. All players get the <strong>same deck</strong> (15 cards, or 25 with 5–6 players; a new deck every round), each in their own shuffle, and play at the same time: tap cards to swap out, two discards, or Stand. Cards you keep never change.</li>
+      <li>A round ends when everyone has finished (1 minute max: when the timer runs out, anyone still playing automatically stands with the hand they have).</li>
+      <li>When you stand, use both discards or run out of time, you're <strong>locked in</strong>: every seat shows <em>Locked in ✓</em> or <em>Playing…</em>, and your screen lists who you're waiting for.</li>
+      <li>Once everyone is locked in, all players see the reveal at the same moment: your hand's points tally up, then everyone's hands and the table appear (or tap <strong>Skip to results</strong>).</li>
       <li>Your round score is added to the <strong>league table</strong>. Highest score wins the round (ties: whoever finished first).</li>
       <li>After round 10 the top of the table is champion. Level on points? Then most rounds won, then best single round, then fastest total finishing time.</li></ul>
-    <h3>Modes</h3><ul><li><strong>Daily deck</strong>: the day's 15 cards are the same for everyone, shuffled uniquely for each player.</li><li><strong>Random deck</strong>: 15 cards from the entire pool.</li><li><strong>Play with friends</strong>: a 10-round league match against up to 3 friends. Matches are saved, so a dropped connection or server restart doesn't end them. See <strong>Multiplayer stats</strong> and the <strong>Trophy room</strong> in the menu.</li></ul></div>`);
+    <h3>Modes</h3><ul><li><strong>Daily deck</strong>: the day's 15 cards are the same for everyone, shuffled uniquely for each player.</li><li><strong>Random deck</strong>: 15 cards from the entire pool.</li><li><strong>Play with friends</strong>: a 10-round league match against up to 5 friends. Matches are saved, so a dropped connection or server restart doesn't end them. See <strong>Multiplayer stats</strong> and the <strong>Trophy room</strong> in the menu.</li></ul></div>`);
 }
 
 // ---------- Views ----------
@@ -160,8 +169,8 @@ function mpStatsHTML() {
       ${kv('Best round', br ? `${br.points} pts<br><small>${esc(br.hand)}</small>` : '–')}
       ${kv('Highest match total', d.highestTotal ? `${d.highestTotal.total} pts` : '–')}${kv('Average finish', d.avgPos ? ord(Math.round(d.avgPos)) + ` <small>(${d.avgPos})</small>` : '–')}
     </tbody></table>
-    <p class="prose"><b>${esc(d.name ?? 'You')}</b> has played <b>${d.matchesPlayed}</b> FootDraw league match${d.matchesPlayed === 1 ? '' : 'es'} and won <b>${d.titles}</b> title${d.titles === 1 ? '' : 's'}${d.perfect ? `, including ${d.perfect} perfect match${d.perfect === 1 ? '' : 'es'}` : ''}.${br ? ` Their best single round was a ${esc(br.hand)} worth ${br.points} points (${br.cards.map(esc).join(', ')}).` : ''}</p>
-    <section class="section"><h2>Most-used cards</h2><table class="wt"><thead><tr><th scope="col">Card</th><th scope="col">Final hands</th></tr></thead><tbody>${d.topCards.map((c) => `<tr><td><a href="${wikiUrl(c.name)}" target="_blank" rel="noopener noreferrer">${esc(c.name)}</a></td><td>${c.count}</td></tr>`).join('')}</tbody></table></section>
+    <p class="prose"><b>${esc(d.name ?? 'You')}</b> has played <b>${d.matchesPlayed}</b> FootDraw league match${d.matchesPlayed === 1 ? '' : 'es'} and won <b>${d.titles}</b> title${d.titles === 1 ? '' : 's'}${d.perfect ? `, including ${d.perfect} perfect match${d.perfect === 1 ? '' : 'es'}` : ''}.${br ? ` Their best single round was a ${esc(br.hand)} worth ${br.points} points (${br.cards.map((t) => esc(cardName({ title: t }))).join(', ')}).` : ''}</p>
+    <section class="section"><h2>Most-used cards</h2><table class="wt"><thead><tr><th scope="col">Card</th><th scope="col">Final hands</th></tr></thead><tbody>${d.topCards.map((c) => `<tr><td><a href="${wikiUrl(c.name)}" target="_blank" rel="noopener noreferrer">${esc(cardName({ title: c.name }))}</a></td><td>${c.count}</td></tr>`).join('')}</tbody></table></section>
     <section class="section"><h2>Most-scored traits</h2><table class="wt"><thead><tr><th scope="col">In common</th><th scope="col">Rounds</th></tr></thead><tbody>${d.topTraits.map((c) => `<tr><td>${esc(c.name)}</td><td>${c.count}</td></tr>`).join('')}</tbody></table></section>
     <section class="section"><h2>Hands</h2><table class="wt"><thead><tr><th scope="col">Hand</th><th scope="col">Count</th></tr></thead><tbody>${HANDS.map((h) => `<tr><td>${h}</td><td>${d.hands[h] ?? 0}</td></tr>`).join('')}</tbody></table></section>
     <section class="section"><h2>Recent matches</h2>${d.history.length ? `<table class="wt"><thead><tr><th scope="col">Date</th><th scope="col">Opponents</th><th scope="col">Finish</th><th scope="col">Points</th><th scope="col">Final table</th></tr></thead><tbody>${d.history.map((h) => `<tr><td>${fmtDate(h.at)}</td><td>${h.opponents.map(esc).join(', ')}</td><td>${h.won ? '🏆 ' : ''}${ord(h.pos)} of ${h.players}</td><td>${h.total}</td><td>${resultsLink(h.code, h.no, 'View')}</td></tr>`).join('')}</tbody></table>` : '<p class="note">No finished matches yet.</p>'}</section>
@@ -193,24 +202,25 @@ function savedResultsHTML() {
 // ---------- Solo game ----------
 async function startSolo(mode) {
   S.view = 'solo'; S.menu = false; S.solo = { loading: true, mode }; render();
-  const pool = await loadPool();
   const date = new URLSearchParams(location.search).get('date') ?? today();
   const key = `fd_daily_${date}`;
-  let g;
+  let g, data;
   const saved = mode === 'daily' && JSON.parse(localStorage.getItem(key) ?? 'null');
-  if (saved) g = { ...saved };
-  else {
-    const deck = mode === 'daily'
-      ? shuffle(makeDeck(pool.cards, pool.meta, 15, rng(`daily:${date}`)), rng(`${token}:${date}`)).map((c) => c.id)
-      : makeDeck(pool.cards, pool.meta, 15, Math.random).map((c) => c.id);
-    g = { deck, hand: deck.slice(0, 5), pos: 5, keeps: [], stages: [deck.slice(0, 5)], done: false };
-  }
+  try {
+    if (saved?.data) { g = { ...saved }; data = saved.data; }
+    else {
+      data = await fetchDeck(mode, date);
+      // Daily: everyone gets the same 15 cards, each browser in its own order. Random: a fresh server-built deck.
+      const deck = mode === 'daily' ? shuffle(data.cards.map((c) => c.id), rng(`${token}:${date}`)) : data.cards.map((c) => c.id);
+      g = { deck, hand: deck.slice(0, 5), pos: 5, keeps: [], stages: [deck.slice(0, 5)], done: false };
+    }
+  } catch { S.solo = null; S.view = 'home'; render(); return; }
   seen.clear();
-  S.solo = { ...g, mode, date, key, selected: [], pool, step: Infinity, busy: false };
+  S.solo = { ...g, mode, date, key, data, selected: [], pool: poolFrom(data), step: Infinity, busy: false };
   if (g.done) finishSolo(true);
   render();
 }
-const saveSolo = () => { const g = S.solo; if (g.mode === 'daily') localStorage.setItem(g.key, JSON.stringify({ deck: g.deck, hand: g.hand, pos: g.pos, keeps: g.keeps, stages: g.stages, done: g.done, pb: g.pb })); };
+const saveSolo = () => { const g = S.solo; if (g.mode === 'daily') localStorage.setItem(g.key, JSON.stringify({ data: g.data, deck: g.deck, hand: g.hand, pos: g.pos, keeps: g.keeps, stages: g.stages, done: g.done, pb: g.pb })); };
 function soloDiscard() {
   const g = S.solo; if (!g.selected.length) return;
   for (const i of g.selected) g.hand[i] = g.deck[g.pos++];
@@ -227,11 +237,9 @@ function finishSolo(restored = false) {
   g.result = { ...r, cards, stages: g.stages.map((h) => scoreHand(h.map((id) => pool.byId.get(id)), pool.meta)), best: bestHand(deckCards, pool.meta) };
   if (!restored) { g.pb = recordStats(g.mode, r); }
   g.done = true; saveSolo();
-  const rv = buildReveal(r);
-  Object.assign(g, rv, { step: restored || reduced() ? rv.scenes.length - 1 : 0 });
-  countShown = restored || reduced() ? r.points : 0;
-  const tick = () => { if (S.solo !== g || g.step >= g.scenes.length - 1) return; setTimeout(() => { if (S.solo !== g) return; g.step++; if (S.view === 'solo') render(); tick(); }, g.scenes[g.step].hold); };
-  tick(); render();
+  g.rv = newReveal(r, cards, { instant: restored });
+  playReveal(g.rv, { alive: () => S.solo === g && S.solo.rv === g.rv, rerender: () => S.view === 'solo' && render() });
+  render();
 }
 // Reveal sequence (mirrors the original: suits pop in, hand name, each match tallies up, bonus, total).
 // Used by solo games and by each player's own hand at the end of a multiplayer round. Purely client-side.
@@ -261,6 +269,31 @@ function animateCount() {
   const step = (now) => { const k = Math.min(1, (now - t0) / dur); el.textContent = Math.round(from + (to - from) * (1 - (1 - k) ** 3)); if (k < 1) countRaf = requestAnimationFrame(step); };
   countRaf = requestAnimationFrame(step);
 }
+// ===== The reveal component (ONE implementation, used as-is by solo games and by multiplayer round ends) =====
+// newReveal → state; playReveal → runs the scenes with the solo timings; revealStageHTML → score + cards markup.
+function newReveal(r, cards, { instant = false } = {}) {
+  const rv = { r, cards, ...buildReveal(r), step: 0 };
+  if (instant || reduced()) rv.step = rv.scenes.length - 1;
+  countShown = rv.step ? r.points : 0;
+  return rv;
+}
+function playReveal(rv, { alive, rerender, onEnd = null, endHold = 0 }) {
+  const tick = () => {
+    if (!alive()) return;
+    if (rv.step >= rv.scenes.length - 1) { if (onEnd) setTimeout(() => alive() && onEnd(), endHold); return; }
+    setTimeout(() => { if (!alive()) return; rv.step++; rerender(); tick(); }, rv.scenes[rv.step].hold);
+  };
+  tick();
+}
+const revealScene = (rv) => rv.scenes[Math.min(rv.step, rv.scenes.length - 1)].scene;
+function revealStageHTML(rv, { doneLine, note = '' }) {
+  const { r, cards } = rv; const scene = revealScene(rv);
+  const shown = new Set(rv.order.slice(0, scene.suits));
+  const { cur, line } = revealLine(r, scene, doneLine);
+  return `<div class="above"><div class="score" style="opacity:${scene.name ? 1 : 0}"><h1>${r.hand}</h1><p class="pts"><span data-to="${scene.points}">${Math.min(countShown, scene.points)}</span> pts</p><p class="line">${line}</p>
+      <p class="pb">${scene.done ? note : ''}</p></div></div>
+    <div class="grid">${cards.map((c, i) => cardHTML(c, { suit: shown.has(i) ? rv.suitAt[i] : null, hl: cur?.cards.includes(i) })).join('')}</div>`;
+}
 function revealLine(r, scene, doneText) {
   const cur = scene.done || scene.bonus ? null : r.matches[scene.matches - 1];
   return { cur, line: scene.done ? doneText : scene.bonus ? `${r.hand} bonus <strong>+${BONUS[r.hand]}</strong>` : cur ? `${esc(cur.label)} <strong>+${cur.points}</strong>` : '' };
@@ -275,18 +308,14 @@ function soloHTML() {
       <div class="grid">${cards.map((c, i) => cardHTML(c, { idx: i, toggle: true, discarded: g.selected.includes(i), info: true })).join('')}</div>
       <div class="below"><div class="bar"><div class="pilewrap">${pileHTML(remaining)}</div><div class="buttons"><button class="btn" data-act="stand">Stand</button><button class="btn primary" data-act="discard" ${g.selected.length ? '' : 'disabled'}>${g.selected.length ? `Discard ${g.selected.length}` : 'Select cards'}</button></div></div></div>`, after: '' };
   }
-  const r = g.result; const { scene } = g.scenes[Math.min(g.step, g.scenes.length - 1)];
-  const shown = new Set(g.order.slice(0, scene.suits));
+  const r = g.result; const scene = revealScene(g.rv);
   const title = g.mode === 'daily' ? g.date : 'Random';
-  const { cur: curMatch, line } = revealLine(r, scene, `${BRAND} ${title}`);
   const pb = g.pb; const share = shareText(BRAND, title, r.hand, r.points, r.stages) + `\n${location.origin}`;
-  const body = `<div class="above"><div class="score" style="opacity:${scene.name ? 1 : 0}"><h1>${r.hand}</h1><p class="pts"><span data-to="${scene.points}">${Math.min(countShown, scene.points)}</span> pts</p><p class="line">${line}</p>
-      <p class="pb">${scene.done && pb ? (pb.previous !== null && r.points > pb.previous ? `<strong>New personal best! (was ${pb.previous} pts)</strong>` : `Personal best: ${pb.points} pts`) : ''}</p></div></div>
-    <div class="grid">${cards.map((c, i) => cardHTML(c, { suit: shown.has(i) ? g.suitAt[i] : null, hl: curMatch?.cards.includes(i) })).join('')}</div>
+  const body = `${revealStageHTML(g.rv, { doneLine: `${BRAND} ${title}`, note: pb ? (pb.previous !== null && r.points > pb.previous ? `<strong>New personal best! (was ${pb.previous} pts)</strong>` : `Personal best: ${pb.points} pts`) : '' })}
     <div class="below">${scene.done ? `<div class="after"><div class="row"><button class="btn" data-act="copy">Copy result</button><button class="btn primary" data-act="mode" data-mode="random">${g.mode === 'daily' ? 'Play a random deck' : 'Play again'}</button></div><pre class="share">${esc(share)}</pre></div>` : ''}</div>`;
   const best = r.best;
   const after = scene.done ? `<div style="padding-top:24px">${matchTable(r, r.cards)}<section class="section">${best.points <= r.points ? '<h2>That was the best hand possible in your deck!</h2>'
-    : `<h2>The best hand in your deck: ${best.hand}, ${best.points} pts</h2><p class="links">${best.cards.map((c) => `<a href="${wikiUrl(c.title)}" target="_blank" rel="noopener noreferrer">${esc(c.title)}</a>`).join(' · ')}</p>${matchTable(best, best.cards)}`}</section><p class="foot">Text from Wikipedia, CC BY-SA. Traits from Wikidata, CC0.</p></div>` : '';
+    : `<h2>The best hand in your deck: ${best.hand}, ${best.points} pts</h2><p class="links">${best.cards.map((c) => `<a href="${wikiUrl(c.title)}" target="_blank" rel="noopener noreferrer">${esc(cardName(c))}</a>`).join(' · ')}</p>${matchTable(best, best.cards)}`}</section><p class="foot">Text from Wikipedia, CC BY-SA. Traits from Wikidata, CC0.</p></div>` : '';
   return { body, after };
 }
 
@@ -332,31 +361,20 @@ function maybeReveal(st) {
   S.revealKey = key; sessionStorage.setItem('fd_reveal', key);
   if (reduced()) return;
   const r = L.results[m.lastYou];
-  const rv = { key, r, ...buildReveal(r), step: 0 };
-  S.reveal = rv; countShown = 0;
-  const tick = () => {
-    const last = rv.step >= rv.scenes.length - 1;
-    setTimeout(() => {
-      if (S.reveal !== rv) return;
-      if (last) { S.reveal = null; countShown = 0; } else rv.step++;
-      if (S.view === 'room') render();
-      if (!last) tick();
-    }, last ? 1800 : rv.scenes[rv.step].hold);
-  };
-  tick();
+  // Exactly the solo reveal (same component, same scenes and timings); then on to the results and league table.
+  const rv = Object.assign(newReveal(r, r.cards), { key });
+  S.reveal = rv;
+  playReveal(rv, { alive: () => S.reveal === rv, rerender: () => S.view === 'room' && render(), endHold: 1800,
+    onEnd: () => { S.reveal = null; if (S.view === 'room') render(); } });
 }
 function revealHTML(st) {
-  const rv = S.reveal, m = st.match, r = rv.r;
-  const { scene } = rv.scenes[Math.min(rv.step, rv.scenes.length - 1)];
-  const shown = new Set(rv.order.slice(0, scene.suits));
-  const { cur, line } = revealLine(r, scene, `Your round ${m.last.round} score`);
-  return `<div class="above"><div class="score" style="opacity:${scene.name ? 1 : 0}"><h1>${r.hand}</h1><p class="pts"><span data-to="${scene.points}">${Math.min(countShown, scene.points)}</span> pts</p><p class="line">${line}</p></div></div>
-    <div class="grid">${r.cards.map((c, i) => cardHTML(c, { suit: shown.has(i) ? rv.suitAt[i] : null, hl: cur?.cards.includes(i) })).join('')}</div>
+  const m = st.match;
+  return `${revealStageHTML(S.reveal, { doneLine: `Your round ${m.last.round} score`, note: 'Results next…' })}
     <div class="below"><div class="bar"><p class="problem muted">Round ${m.last.round} of ${st.rounds} · results next</p><div class="pilewrap"></div><div class="buttons"><span></span><button class="btn" data-act="skipreveal">Skip to results</button></div></div></div>`;
 }
 function lobbyHTML() {
   return pageHead('Play with friends') + `<div class="form">
-    <p class="prose">A 10-round FootDraw match for 2–4 players. Everyone plays the same deck each round; points add up in a league table and the top of the table after round 10 is champion. Create a room and send the link, or join with a code.</p>
+    <p class="prose">A 10-round FootDraw match for 2–6 players. Everyone plays the same deck each round; points add up in a league table and the top of the table after round 10 is champion. Create a room and send the link, or join with a code.</p>
     <label>Your name<input id="nm" maxlength="20" autocomplete="nickname" value="${esc(S.name)}" placeholder="e.g. Pelé"></label>
     <button class="btn primary" data-act="create">Create a room</button>
     <div class="row"><input id="code" maxlength="5" placeholder="Room code" style="text-transform:uppercase" value="${esc(S.joinCode ?? '')}"><button class="btn" data-act="join">Join room</button></div>
@@ -369,9 +387,13 @@ function leagueTableHTML(m, { final = false } = {}) {
     ${rows.map((r) => `<tr class="${r.pos === 1 ? 'lead' : ''}"><td>${final && r.pos === 1 ? '🏆' : ord(r.pos)}</td><td>${esc(r.name)}${r.left ? ' <span class="muted">(left)</span>' : ''}</td><td>+${r.roundScore}</td><td>${r.roundsWon}</td><td>${r.best}</td><td><strong>${r.total}</strong></td></tr>`).join('')}
   </tbody></table>`;
 }
-function roundResultsHTML(m) {
+// After the reveal: 1) round results (every player's final hand and score), 2) the league table, then the
+// per-player trait breakdown further down.
+function roundResultsHTML(m, { details = false } = {}) {
   const L = m.last; if (!L) return '';
-  return `<section class="section"><h2>Round ${L.round} results</h2>${L.results.map((p, i) => `<div class="player-res"><h3><span>${i === 0 ? '⭐ ' : ''}${esc(p.name)} · ${p.hand}</span><span class="${i === 0 ? 'win' : 'muted'}">${p.points} pts</span></h3>
+  if (!details) return `<section class="roundres"><h2 class="tablehead">Round ${L.round} results</h2><table class="wt rr"><thead><tr><th scope="col"></th><th scope="col">Player</th><th scope="col">Hand</th><th scope="col">Final cards</th><th scope="col">Pts</th></tr></thead><tbody>
+    ${L.results.map((p, i) => `<tr class="${i === 0 ? 'lead' : ''}"><td>${i === 0 ? '⭐' : ord(i + 1)}</td><td>${esc(p.name)}</td><td>${p.hand}</td><td class="fc">${p.cards.map((c, j) => `<span class="${p.newIdx.includes(j) ? 'isnew' : ''}">${esc(cardName(c))}</span>`).join(', ')}</td><td><strong>${p.points}</strong></td></tr>`).join('')}</tbody></table></section>`;
+  return `<section class="section"><h2>Round ${L.round} details</h2>${L.results.map((p, i) => `<div class="player-res"><h3><span>${i === 0 ? '⭐ ' : ''}${esc(p.name)} · ${p.hand}</span><span class="${i === 0 ? 'win' : 'muted'}">${p.points} pts</span></h3>
     <div class="mini">${p.cards.map((c, j) => cardHTML(c, { badge: p.newIdx.includes(j) ? 'New' : null })).join('')}</div>${matchTable(p, p.cards)}</div>`).join('')}</section>`;
 }
 function readyPanelHTML(st) {
@@ -387,19 +409,21 @@ function roomHTML() {
   const st = S.room; if (!st) return { body: '<p class="center-msg">Joining…</p>', after: '' };
   const m = st.match; const playing = m?.phase === 'playing';
   const meSeat = st.seats.find((s) => s.isYou);
-  const seatsHTML = Array.from({ length: 4 }, (_, i) => {
+  const nSeats = st.maxPlayers ?? 6;
+  const seatsHTML = Array.from({ length: nSeats }, (_, i) => {
     const s = st.seats[i];
     if (!s) return `<div class="seat empty">Open seat</div>`;
-    const status = playing ? (s.status ?? '') : (s.readyUp ? '<span class="rdy">✓ Ready</span>' : '<span class="nrdy">Not ready</span>');
-    return `<div class="seat ${!playing && s.readyUp ? 'is-ready' : ''} ${playing && s.status === 'Finished' ? 'is-ready' : ''}" title="${!playing ? (s.readyUp ? `${esc(s.name)} is ready` : `Waiting for ${esc(s.name)} to ready up`) : esc(s.status ?? '')}"><div class="nm">${esc(s.name)}${s.isYou ? ' (you)' : ''}${s.isHost ? ' ★' : ''}</div><div class="ch">${s.total != null && !S.reveal ? `${s.total} pts` : '&nbsp;'}</div><div class="st">${status}${s.connected ? '' : ' <span class="off">· offline</span>'}</div></div>`;
+    // During a round every seat shows whether that player is locked in (stood / used both discards / timed out).
+    const status = playing ? (s.status === 'Spectating' ? 'Spectating' : s.lockedIn ? '<span class="rdy lock">Locked in ✓</span>' : '<span class="nrdy">Playing…</span>') : (s.readyUp ? '<span class="rdy">✓ Ready</span>' : '<span class="nrdy">Not ready</span>');
+    return `<div class="seat ${!playing && s.readyUp ? 'is-ready' : ''} ${playing && s.lockedIn ? 'is-ready' : ''}" title="${!playing ? (s.readyUp ? `${esc(s.name)} is ready` : `Waiting for ${esc(s.name)} to ready up`) : s.lockedIn ? `${esc(s.name)} is locked in` : s.status === 'Spectating' ? `${esc(s.name)} is spectating` : `${esc(s.name)} is still playing`}"><div class="nm">${esc(s.name)}${s.isYou ? ' (you)' : ''}${s.isHost ? ' ★' : ''}</div><div class="ch">${s.total != null && !S.reveal ? `${s.total} pts` : '&nbsp;'}</div><div class="st">${status}${s.connected ? '' : ' <span class="off">· offline</span>'}</div></div>`;
   }).join('');
   const invite = `${location.origin}/room/${st.code}`;
   let body = `<div class="roomhead"><span>Room</span><span class="code">${st.code}</span><button class="btn small" data-act="copylink" data-link="${esc(invite)}">${S.copied ? 'Link copied' : 'Copy invite link'}</button><button class="btn small" data-act="leave">Leave</button>${m ? `<span class="muted">${m.phase === 'final' ? 'Match finished' : `Round ${m.round} of ${st.rounds}`}</span>` : ''}${S.roomError ? `<span class="err">${esc(S.roomError)}</span>` : ''}</div>
-    <div class="seats">${seatsHTML}</div>`;
+    <div class="seats seats-${nSeats}">${seatsHTML}</div>`;
   let after = '';
   if (playing) {
     const you = m.you;
-    const timer = m.deadline ? `<div class="timer"><i data-deadline="${m.deadline}" style="width:${Math.max(0, Math.min(100, (m.deadline - Date.now()) / st.roundMs * 100))}%"></i></div>` : '';
+    const timer = m.deadline ? `<div class="timer"><i data-deadline="${m.deadline}" style="width:${Math.max(0, Math.min(100, (m.deadline - Date.now()) / st.roundMs * 100))}%"></i></div><span class="secs" data-left="${m.deadline}" title="Time left: you auto-stand at 0">${Math.max(0, Math.ceil((m.deadline - Date.now()) / 1000))}s</span>` : '';
     if (!you) {
       body += `<div class="above"><p class="center-msg">Round ${m.round} in progress. You'll play in the next match.</p></div>`;
     } else if (!you.done) {
@@ -408,11 +432,9 @@ function roomHTML() {
         <div class="grid">${you.hand.map((c, i) => cardHTML(c, { idx: i, toggle: true, discarded: sel.includes(i), info: true, badge: !sel.includes(i) && you.lastNew.includes(i) ? 'New' : null })).join('')}</div>
         <div class="below"><div class="bar"><p class="problem">${sel.length ? `Swap ${sel.length}, keep ${5 - sel.length}` : `Round ${m.round} of ${st.rounds}`}</p>${timer}<div class="pilewrap">${pileHTML(you.deckLeft)}</div><div class="buttons"><button class="btn" data-act="mpstand" ${S.busy ? 'disabled' : ''}>Stand</button><button class="btn primary" data-act="mpdiscard" ${sel.length && !S.busy ? '' : 'disabled'}>${sel.length ? `Discard ${sel.length}` : 'Select cards'}</button></div></div></div>`;
     } else {
-      const r = you.result;
-      body += `<div class="above"><div class="score"><h1>Hand locked in</h1><p class="line">Your score is revealed when the round ends · waiting for: ${m.waitingFor.map(esc).join(', ')}</p></div></div>
+      body += `<div class="above"><div class="score"><h1>Locked in ✓</h1><p class="line lockwait" role="status">Locked in, waiting for: ${m.waitingFor.map(esc).join(', ')}</p><p class="pb">Scores are revealed for everyone at the same time when the last player locks in.</p></div></div>
         <div class="grid">${you.hand.map((c, i) => cardHTML(c, { badge: you.lastNew.includes(i) ? 'New' : null })).join('')}</div>
-        <div class="below"><div class="bar"><p class="problem muted">Round ends when everyone has finished.</p>${timer}<div class="pilewrap">${pileHTML(you.deckLeft)}</div><div class="buttons"></div></div></div>`;
-      after = matchTable(r, you.hand);
+        <div class="below"><div class="bar"><p class="problem muted">Round ends when everyone is locked in.</p>${timer}<div class="pilewrap">${pileHTML(you.deckLeft)}</div><div class="buttons"></div></div></div>`;
     }
   } else if (S.reveal && m?.last && S.reveal.key === `${st.code}:${m.no}:${m.last.round}`) {
     body += revealHTML(st);
@@ -421,9 +443,9 @@ function roomHTML() {
     let head = '';
     if (m?.phase === 'final') head = `<div class="score"><h1>🏆 ${esc(m.champion)} is the champion</h1><p class="pts"><span>${m.championPts ?? m.table[0]?.total ?? 0}</span> pts</p><p class="line">Final table after ${m.round} rounds${m.championWhy ? ` · ${esc(m.championWhy)}` : ''}</p><p class="line finallinks">${resultsLink(st.code, m.no, 'Permanent link to this table')} · <a href="/stats" data-act="mpage" data-page="mpstats">Your stats</a> · <a href="/trophies" data-act="mpage" data-page="trophies">Trophy room</a></p></div>`;
     else if (m?.last) head = `<div class="score"><h1>Round ${m.last.round} of ${st.rounds}</h1><p class="line">${esc(m.last.winner)} wins the round with ${m.last.results[0]?.points ?? 0} pts</p></div>`;
-    body += `<div class="above">${head}${m ? leagueTableHTML(m, { final: m.phase === 'final' }) : ''}${panel}</div>
+    body += `<div class="above">${head}${m?.last ? roundResultsHTML(m) : ''}${m ? `<h2 class="tablehead">${m.phase === 'final' ? 'Final table' : 'League table'}</h2>${leagueTableHTML(m, { final: m.phase === 'final' })}` : ''}${panel}</div>
       <div class="below"><div class="bar"><p class="problem muted" title="${esc(waitText)}">${rc.ready}/${rc.total} ready${rc.waitingFor.length && !rc.allReady ? ` · waiting for ${rc.waitingFor.map(esc).join(', ')}` : ''}</p><div class="pilewrap"></div><div class="buttons"><span></span><button class="btn ${meSeat?.readyUp ? '' : 'primary'}" data-act="ready" data-ready="${meSeat?.readyUp ? 0 : 1}" aria-pressed="${!!meSeat?.readyUp}">${meSeat?.readyUp ? '✓ Ready (click to cancel)' : `Ready · ${esc(rc.next)}`}</button></div></div></div>`;
-    if (m) after = roundResultsHTML(m);
+    if (m) after = roundResultsHTML(m, { details: true });
   }
   after += `<div class="log" aria-live="polite">${st.log.slice().reverse().map((l) => `<div>${esc(l.msg)}</div>`).join('')}</div><p class="foot">Text from Wikipedia, CC BY-SA. Traits from Wikidata.</p>`;
   return { body, after };
@@ -484,7 +506,7 @@ $root.addEventListener('click', async (e) => {
     case 'leave': await emit('leave'); S.room = null; sessionStorage.removeItem('fd_room'); history.pushState(null, '', '/'); S.view = 'lobby'; return render();
     case 'copylink': await navigator.clipboard?.writeText(el.dataset.link).catch(() => {}); S.copied = true; render(); setTimeout(() => { S.copied = false; render(); }, 1500); return;
     case 'ready': return emit('ready', { ready: el.dataset.ready === '1' });
-    case 'skipreveal': S.reveal = null; countShown = 0; render(); return;
+    case 'skipreveal': S.reveal = null; render(); return;
     case 'mpstand': if (S.busy) return; S.busy = true; render(); return emit('stand').then(() => { S.busy = false; render(); });
     case 'mpdiscard': {
       // Send the exact hand we are looking at and the discard step, so the server rejects stale/double submits.
@@ -499,7 +521,8 @@ $root.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.target.id
 addEventListener('keydown', (e) => { if (e.key === 'Escape' && (S.modal || S.menu)) { S.modal = null; S.menu = false; render(); } });
 // Countdown bars without full re-renders.
 setInterval(() => {
-  document.querySelectorAll('[data-deadline]').forEach((el) => { el.style.width = `${Math.max(0, Math.min(100, (+el.dataset.deadline - Date.now()) / (S.room?.roundMs ?? 120000) * 100))}%`; });
+  document.querySelectorAll('[data-deadline]').forEach((el) => { el.style.width = `${Math.max(0, Math.min(100, (+el.dataset.deadline - Date.now()) / (S.room?.roundMs ?? 60000) * 100))}%`; });
+  document.querySelectorAll('[data-left]').forEach((el) => { el.textContent = `${Math.max(0, Math.ceil((+el.dataset.left - Date.now()) / 1000))}s`; });
   document.querySelectorAll('[data-next]').forEach((el) => { el.textContent = `${el.dataset.label ?? 'Next hand in'} ${Math.max(0, Math.ceil((+el.dataset.next - Date.now()) / 1000))}s`; });
 }, 1000);
 addEventListener('popstate', () => {

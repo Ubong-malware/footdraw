@@ -58,6 +58,7 @@ for (let round = 1; round <= 10; round++) {
       // Swap cards 2 and 4; the other three must be exactly the same afterwards.
       const before = await titles(p);
       await p.click('.slot:nth-child(2) .card'); await p.click('.slot:nth-child(4) .card');
+      if (round === 1 && who === 'A') { const secs = await p.$eval('.secs', (e) => parseInt(e.textContent, 10)); if (!(secs > 0 && secs <= 60)) throw new Error(`Round timer should be ≤ 60s, shows ${secs}`); }
       if (round === 1 && who === 'A') { await p.waitForTimeout(300); await p.screenshot({ path: 'screenshots/4-match-round.png', fullPage: true }); }
       await p.click('[data-act="mpdiscard"]');
       await p.waitForFunction((prev) => { const t = [...document.querySelectorAll('.grid .ttl')].map((e) => e.textContent); return t[1] !== prev[1] || t[3] !== prev[3]; }, before, { timeout: 10000 });
@@ -65,6 +66,23 @@ for (let round = 1; round <= 10; round++) {
       for (const i of [0, 2, 4]) if (after[i] !== before[i]) throw new Error(`Round ${round} ${who}: kept card ${i} changed: ${before[i]} → ${after[i]}`);
     }
     await p.click('[data-act="mpstand"]');
+    if (round === 1 && who === 'A') {
+      // A is locked in: A sees who they wait for; both screens show A "Locked in ✓" and B "Playing…".
+      await a.waitForSelector('.lockwait');
+      const wait = (await a.textContent('.lockwait')).trim();
+      if (wait !== 'Locked in, waiting for: Bob') throw new Error('Lock-in text: ' + wait);
+      await b.waitForFunction(() => /Alice[\s\S]*Locked in ✓/.test(document.querySelector('.seats')?.textContent ?? ''));
+      const seatsB = await b.$$eval('.seat', (els) => els.slice(0, 2).map((e) => e.textContent.replace(/\s+/g, ' ').trim()));
+      if (!/Locked in ✓/.test(seatsB[0]) || !/Playing…/.test(seatsB[1])) throw new Error('Seat badges: ' + seatsB.join(' | '));
+      if (await a.$('[data-act="skipreveal"]')) throw new Error('Reveal started before everyone locked in');
+      await a.screenshot({ path: 'screenshots/4a-locked-in.png', fullPage: true });
+      console.log('lock-in ok:', wait, '·', seatsB.join(' | '));
+    }
+  }
+  // Everyone locked in → both reveals start together.
+  if (round === 1) {
+    const [ta, tb] = await Promise.all([a, b].map(async (p) => { await p.waitForSelector('[data-act="skipreveal"]', { timeout: 15000 }); return Date.now(); }));
+    if (Math.abs(ta - tb) > 1500) throw new Error(`Reveals not simultaneous: ${Math.abs(ta - tb)} ms apart`);
   }
   // Round over: each player first sees their own hand's points tally up (client-side reveal), then the table.
   await a.waitForSelector('[data-act="skipreveal"]', { timeout: 15000 });
@@ -72,6 +90,9 @@ for (let round = 1; round <= 10; round++) {
     // A watches the whole reveal: the number must count up and land on A's round score; no socket traffic meanwhile.
     const msgs0 = await a.evaluate(() => window.__fd.msgs);
     await b.click('[data-act="skipreveal"]').catch(() => {}); await b.waitForSelector('table.league', { timeout: 5000 });
+    // Same component as solo: identical structure (score block with hand, counting points, line, note; 5-card grid).
+    const shape = await a.$eval('.screen', (e) => [!!e.querySelector('.above .score h1'), !!e.querySelector('.score .pts span[data-to]'), !!e.querySelector('.score .line'), !!e.querySelector('.score .pb'), e.querySelectorAll('.grid .slot').length].join());
+    if (shape !== 'true,true,true,true,5') throw new Error('Multiplayer reveal is not the solo reveal component: ' + shape);
     const seen = [];
     for (let i = 0; i < 100 && await a.$('[data-act="skipreveal"]'); i++) {
       const v = await a.$eval('.score .pts span', (e) => +e.textContent).catch(() => null); if (v != null && v !== seen.at(-1)) seen.push(v);

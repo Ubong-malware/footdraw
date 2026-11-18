@@ -95,15 +95,35 @@ export function bestHand(deck, meta) {
 }
 
 // Build a deck that has things in common: a few themes (traits shared by several cards), then random fill.
-export function makeDeck(pool, meta, size, rand) {
-  const themes = shuffle(Object.entries(meta.traits).filter(([, t]) => t.count >= 5 && t.count <= meta.size / 6), rand);
-  const chosen = new Map();
-  const nThemes = Math.max(2, Math.round(size / 6));
-  for (const [key] of themes.slice(0, nThemes)) {
-    const holders = shuffle(pool.filter((c) => c.traits.includes(key)), rand).slice(0, 3 + Math.floor(rand() * 3));
-    for (const c of holders) if (chosen.size < size) chosen.set(c.id, c);
+// Deck builder. A deck has a balanced mix of card types (mostly players, plus clubs, national teams and
+// competitions), 2–3 hidden "themes" (traits several cards share, so hands can actually form pairs and trips), and
+// the rest drawn at random. `exclude` (a Set of ids) keeps recently seen cards out when the pool allows it.
+export const DECK_MIX = { player: 8, club: 3, nation: 2, event: 2 };
+export function makeDeck(pool, meta, size, rand, { exclude = null } = {}) {
+  const fresh = exclude?.size ? pool.filter((c) => !exclude.has(c.id)) : pool;
+  const src = fresh.length >= size * 20 ? fresh : pool;
+  // Type quota for this deck: the base mix, nudged at random so decks don't all look alike.
+  const scale = size / 15;
+  const quota = Object.fromEntries(Object.entries(DECK_MIX).map(([k, v]) => [k, Math.max(1, Math.round(v * scale))]));
+  const kinds = Object.keys(quota);
+  for (let n = 0; n < 2; n++) { const from = kinds[Math.floor(rand() * kinds.length)], to = kinds[Math.floor(rand() * kinds.length)]; if (quota[from] > 1) { quota[from]--; quota[to]++; } }
+  const total = Object.values(quota).reduce((a, b) => a + b, 0);
+  quota.player += size - total;
+  const left = { ...quota }, chosen = new Map();
+  const take = (c) => { if (chosen.size >= size || chosen.has(c.id) || !(left[c.kind] > 0)) return false; chosen.set(c.id, c); left[c.kind]--; return true; };
+  const themes = shuffle(Object.entries(meta.traits).filter(([, t]) => t.count >= 5 && t.count <= meta.size / 8), rand);
+  const nThemes = 2 + (rand() < 0.5 ? 1 : 0);
+  let used = 0;
+  for (const [key] of themes) {
+    if (used >= nThemes) break;
+    const holders = shuffle(src.filter((c) => c.traits.includes(key) && !chosen.has(c.id) && left[c.kind] > 0), rand);
+    if (holders.length < 2) continue;
+    const want = 2 + Math.floor(rand() * 3);
+    let got = 0; for (const c of holders) { if (got >= want) break; if (take(c)) got++; }
+    if (got >= 2) used++;
   }
-  for (const c of shuffle(pool, rand)) { if (chosen.size >= size) break; chosen.set(c.id, c); }
+  for (const c of shuffle(src, rand)) { if (chosen.size >= size) break; take(c); }
+  for (const c of shuffle(pool, rand)) { if (chosen.size >= size) break; if (!chosen.has(c.id)) chosen.set(c.id, c); } // tiny pools
   return shuffle([...chosen.values()], rand);
 }
 

@@ -7,18 +7,20 @@ import { openDb } from './db.js';
 import { randomInt } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { scoreHand, makeDeck, shuffle, BONUS } from './public/shared/game.js';
+import { scoreHand, makeDeck, shuffle, rng, BONUS } from './public/shared/game.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = +(process.env.PORT ?? 8080);
-const MAX_PLAYERS = 4;
+const MAX_PLAYERS = 6;
 const ROUNDS = +(process.env.ROUNDS ?? 10);
-const DECK_SIZE = 15;
-const ROUND_MS = +(process.env.ROUND_MS ?? 120000);           // per-round timer; unfinished players auto-stand
+const DECK_SIZE = 15;                                         // solo decks and 2–4 player rounds
+// Each round's shared deck: 15 cards for 2–4 players, 25 for 5–6 (more cards so big tables don't all draw the same).
+const deckSizeFor = (players) => (players >= 5 ? 25 : 15);
+const ROUND_MS = +(process.env.ROUND_MS ?? 60000);            // 1-minute round timer; unfinished players auto-stand
 // Once every required player is ready, a short countdown runs (cancelled if anyone un-readies or joins).
 const READY_COUNTDOWN_MS = +(process.env.READY_COUNTDOWN_MS ?? 3000);
 
-const poolData = JSON.parse(readFileSync(path.join(__dirname, 'public/data/pool.json'), 'utf8'));
+const poolData = JSON.parse(readFileSync(path.join(__dirname, 'cards/pool.json'), 'utf8'));
 const POOL = poolData.cards;
 const META = { traits: poolData.traits, size: POOL.length };
 const CARD = new Map(POOL.map((c) => [c.id, c]));
@@ -62,6 +64,29 @@ app.get('/api/stats', (req, res) => {
   res.json(store.playerStats(t, (id) => CARD.get(id)?.title ?? id));
 });
 for (const route of ['/results/:code/:no', '/stats', '/trophies']) app.get(route, (_, res) => res.sendFile(path.join(__dirname, 'public/index.html')));
+// Solo decks are built on the server; the browser only downloads the 15 cards it plays with (plus the trait labels
+// and pool counts needed to score them), not the whole pool.
+const dailyCache = new Map();
+function deckPayload(cards) {
+  const traits = {};
+  for (const c of cards) for (const k of c.traits) traits[k] = META.traits[k];
+  return { size: META.size, traits, cards: cards.map((c) => ({ ...publicCard(c.id), traits: c.traits })) };
+}
+app.get('/api/deck', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  if (req.query.mode === 'daily') {
+    const date = String(req.query.date ?? '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'bad date' });
+    if (!dailyCache.has(date)) { if (dailyCache.size > 20) dailyCache.clear(); dailyCache.set(date, deckPayload(makeDeck(POOL, META, DECK_SIZE, rng(`daily:${date}`)))); }
+    return res.json(dailyCache.get(date));
+  }
+  const t = req.get('x-fd-token');
+  let exclude = null;
+  if (okToken(t)) { try { exclude = store.recentFor([t]); } catch {} }
+  const cards = makeDeck(POOL, META, DECK_SIZE, crand, { exclude });
+  if (okToken(t)) { try { store.addRecent([t], cards.map((c) => c.id)); } catch {} }
+  res.json(deckPayload(cards));
+});
 app.get('/room/:code', (_, res) => res.sendFile(path.join(__dirname, 'public/index.html')));
 
 const http = createServer(app);
@@ -164,9 +189,15 @@ function startRound(room) {
   m.phase = 'playing';
   // A fresh 15-card deck every round (no card repeats within a match). Everyone gets the same deck, each in
   // their own independent shuffle (like the Daily deck).
-  const fresh = POOL.filter((c) => !m.usedCards.has(c.id));
-  const deck = makeDeck(fresh.length >= 60 ? fresh : POOL, META, DECK_SIZE, crand).map((c) => c.id);
+  // Never repeat a card within a match; also keep out cards these players were dealt in their recent matches/decks
+  // when the pool is big enough.
+  const players = playingNow(m);
+  let exclude = new Set([...m.usedCards, ...store.recentFor(players)]);
+  const size = deckSizeFor(players.length);
+  if (POOL.length - exclude.size < size * 20) exclude = m.usedCards;
+  const deck = makeDeck(POOL, META, size, crand, { exclude }).map((c) => c.id);
   deck.forEach((id) => m.usedCards.add(id));
+  try { store.addRecent(players, deck); } catch (e) { console.error('recent failed', e.message); }
   const now = Date.now();
   m.cur = { deck, startedAt: now, deadline: now + ROUND_MS, players: {} };
   for (const t of playingNow(m)) {
@@ -271,21 +302,22 @@ function viewFor(room, token) {
   const cur = m?.phase === 'playing' ? m.cur : null;
   const mine = cur?.players[token];
   return {
-    code: room.code, host: room.host === token, rounds: ROUNDS, roundMs: ROUND_MS, nextAt: room.nextAt,
+    code: room.code, host: room.host === token, maxPlayers: MAX_PLAYERS, rounds: ROUNDS, roundMs: ROUND_MS, nextAt: room.nextAt,
     readyCheck: m?.phase === 'playing' ? null : readyInfo(room),
     seats: room.seats.map((s) => {
       const p = cur?.players[s.token]; const row = m?.table[s.token];
       return {
         name: s.name, isYou: s.token === token, isHost: s.token === room.host, connected: !!s.socketId,
         readyUp: !!s.ready, inMatch: !!row, total: row?.total ?? null,
-        status: cur ? (p ? (p.done ? 'Finished' : `Playing · ${2 - p.keeps.length} discards left`) : 'Spectating') : null,
+        lockedIn: cur ? !!p?.done : null,
+        status: cur ? (p ? (p.done ? 'Locked in' : 'Playing') : 'Spectating') : null,
       };
     }),
     match: m && {
       no: room.matchNo, phase: m.phase, round: m.round, champion: m.champion ?? null, championPts: m.championPts ?? null, championWhy: m.championWhy ?? null,
       deadline: cur?.deadline ?? null, table: standings(m), last: m.last, lastYou: m.lastTokens ? m.lastTokens.indexOf(token) : -1, youPlay: m.participants.includes(token),
       waitingFor: cur ? Object.keys(cur.players).filter((t) => !cur.players[t].done && !m.table[t].left).map((t) => m.table[t].name) : [],
-      you: mine && { hand: mine.hand.map(publicCard), step: mine.keeps.length, discardsLeft: 2 - mine.keeps.length, deckLeft: DECK_SIZE - mine.pos, done: mine.done, result: mine.done ? mine.result : null, lastNew: mine.lastNew },
+      you: mine && { hand: mine.hand.map(publicCard), step: mine.keeps.length, discardsLeft: 2 - mine.keeps.length, deckLeft: cur.deck.length - mine.pos, deckSize: cur.deck.length, done: mine.done, result: mine.done ? mine.result : null, lastNew: mine.lastNew },
     },
     log: room.log.slice(-25),
   };
@@ -306,7 +338,7 @@ io.on('connection', (socket) => {
     if (!r) return ack(cb, { error: 'Room not found' });
     let s = seatOf(r, token);
     if (!s) {
-      if (r.seats.length >= MAX_PLAYERS) return ack(cb, { error: 'Room is full (4 players max)' });
+      if (r.seats.length >= MAX_PLAYERS) return ack(cb, { error: `Room is full (${MAX_PLAYERS} players max)` });
       s = { token, name: name ?? 'Player', socketId: null, ready: false };
       r.seats.push(s);
       say(r, `${s.name} joined${r.match && r.match.phase !== 'final' && !r.match.participants.includes(token) ? ' (spectating until the next match)' : ''}.`);

@@ -1,4 +1,4 @@
-// Simulates 2–4 players playing a full 10-round FootDraw match against a running server and checks invariants.
+// Simulates 2–6 players playing a full 10-round FootDraw match against a running server and checks invariants.
 // Usage: node scripts/sim.mjs [url] [players]      (start the server with READY_COUNTDOWN_MS=300 for speed)
 import { io } from 'socket.io-client';
 import { randomBytes } from 'node:crypto';
@@ -14,6 +14,13 @@ function client(name, token = randomBytes(16).toString('hex')) {
   const c = { name, token, s, state: null, busy: false };
   s.on('state', (st) => {
     c.state = st;
+    const yu = st.match?.you;
+    if (yu) {
+      const want = N >= 5 ? 25 : 15;
+      assert(yu.deckSize === want, `deck size ${yu.deckSize}, expected ${want} for ${N} players`);
+      assert(new Set(yu.hand.map((x) => x.id)).size === 5, 'hand has duplicate cards');
+      if (st.match.phase === 'playing') for (const seat of st.seats) assert(typeof seat.lockedIn === 'boolean' || seat.status === 'Spectating', 'seat lock-in flag');
+    }
     const y = st.match?.you;
     if (y) {
       const ids = y.hand.map((x) => x.id);
@@ -37,10 +44,10 @@ await Promise.all(players.map((p) => new Promise((r) => p.s.on('connect', r))));
 const created = await players[0].emit('create', { name: players[0].name });
 assert(created.ok, 'create room'); const code = created.code; console.log('room', code);
 for (const p of players.slice(1)) assert((await p.emit('join', { code, name: p.name })).ok, `join ${p.name}`);
-if (N === 4) {
+if (N === 6) {
   const extra = client('Extra'); await new Promise((r) => extra.s.on('connect', r));
-  const r = await extra.emit('join', { code, name: 'Extra' }); assert(r.error?.includes('full'), '5th rejected'); extra.s.close();
-  console.log('  5th player rejected ✓');
+  const r = await extra.emit('join', { code, name: 'Extra' }); assert(r.error?.includes('full'), '7th rejected'); extra.s.close();
+  console.log('  7th player rejected ✓');
 }
 await sleep(150);
 const noMatch = () => !players[0].state.match;
@@ -140,6 +147,6 @@ assert(fm?.phase === 'final' && fm.round === 10 && stats.rounds === 10, `match s
 assert(fm.champion === fm.table[0].name && fm.championPts === fm.table[0].total, 'champion is top of the table');
 console.log(`  🏆 champion: ${fm.champion}${fm.championWhy ? ` (${fm.championWhy})` : ''}`);
 console.log(`kept-card checks: ${stats.keptChecked} draws verified, ${stats.staleRejected} duplicate submits rejected, ${stats.rounds} rounds verified`);
-console.log(`PASS: ${N} players, full ${fm.round}-round match`);
+console.log(`PASS: ${N} players, full ${fm.round}-round match (${N >= 5 ? 25 : 15}-card decks)`);
 players.forEach((p) => p.s.close());
 process.exit(0);

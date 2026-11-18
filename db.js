@@ -33,6 +33,8 @@ export function openDb(dir) {
       deck_order TEXT NOT NULL, hand TEXT NOT NULL, pos INTEGER NOT NULL, keeps TEXT NOT NULL, stages TEXT NOT NULL,
       done INTEGER NOT NULL, finish_ms INTEGER, result TEXT, last_new TEXT NOT NULL, score INTEGER,
       PRIMARY KEY (room_code, match_no, round, token));
+    CREATE TABLE IF NOT EXISTS recent_cards (           -- cards each browser saw lately (avoid repeats across matches)
+      token TEXT PRIMARY KEY, ids TEXT NOT NULL, updated_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS league (                 -- league totals per player per match
       room_code TEXT NOT NULL, match_no INTEGER NOT NULL, token TEXT NOT NULL, seat INTEGER NOT NULL, name TEXT NOT NULL,
       total INTEGER NOT NULL, rounds TEXT NOT NULL, rounds_won INTEGER NOT NULL, best INTEGER NOT NULL,
@@ -182,6 +184,16 @@ export function openDb(dir) {
     };
   }
 
+  // Recently dealt cards per browser token (last RECENT_KEEP ids), used to avoid repeats across matches/decks.
+  const RECENT_KEEP = 450;
+  const getRecent = db.prepare('SELECT ids FROM recent_cards WHERE token = ?');
+  const putRecent = db.prepare(`INSERT INTO recent_cards (token, ids, updated_at) VALUES (?,?,?)
+    ON CONFLICT(token) DO UPDATE SET ids=excluded.ids, updated_at=excluded.updated_at`);
+  function recentFor(tokens) { const out = new Set(); for (const t of tokens) for (const id of P(getRecent.get(t)?.ids) ?? []) out.add(id); return out; }
+  function addRecent(tokens, ids) {
+    for (const t of tokens) { const prev = P(getRecent.get(t)?.ids) ?? []; putRecent.run(t, J([...prev.filter((x) => !ids.includes(x)), ...ids].slice(-RECENT_KEEP)), Date.now()); }
+  }
+
   const forgetRoom = (code) => q.delRoom.run(code); // matches/rounds/league rows are kept for history
-  return { db, saveRoom, loadRooms, matchResults, playerStats, forgetRoom };
+  return { db, saveRoom, loadRooms, matchResults, playerStats, forgetRoom, recentFor, addRecent };
 }

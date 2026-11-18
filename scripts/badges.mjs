@@ -1,7 +1,7 @@
 // Fills missing club / national-team images with crests from TheSportsDB (free public test key "123").
 import { readFileSync, writeFileSync } from 'node:fs';
 const KEY = process.env.SPORTSDB_KEY ?? '123';
-const file = 'public/data/pool.json';
+const file = 'cards/pool.json';
 const d = JSON.parse(readFileSync(file, 'utf8'));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const name = (c) => c.title.replace(/ national (?:association )?football team$/, '').replace(/ \(.*\)$/, '').replace(/^(?:FC|AFC|AC|AS|SS|SSC|RC|SL|CA|CR|SC) /, '').replace(/ (?:F\.C\.|FC|CF|A\.F\.C\.|C\.F\.|S\.C\.|SC)$/, '');

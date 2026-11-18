@@ -1,7 +1,7 @@
 // Fetches occupations + senior career size for every player card, writes scripts/player-audit.json.
 import { readFileSync, writeFileSync } from 'node:fs';
 const UA = 'FootDraw/1.0 (data audit)';
-const d = JSON.parse(readFileSync('public/data/pool.json', 'utf8'));
+const d = JSON.parse(readFileSync('cards/pool.json', 'utf8'));
 const ids = d.cards.filter((c) => c.kind === 'player').map((c) => c.id);
 async function sparql(q) {
   for (let i = 0; i < 4; i++) {

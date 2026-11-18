@@ -6,7 +6,7 @@ position, World Cup played, award, birthplace, decade…). Rarer traits score mo
 
 * **Daily deck** (solo) — the same 15 cards for everyone each day, shuffled per player. Two discard/draw chances.
 * **Random deck** (solo) — 15 cards from the whole pool.
-* **Play with friends** — online rooms for 2–4 players: a **10-round match** of normal FootDraw rounds with a
+* **Play with friends** — online rooms for 2–6 players: a **10-round match** of normal FootDraw rounds with a
   league table; the top of the table after round 10 is champion.
 
 ## Run it
@@ -22,11 +22,12 @@ Tests (server must be running):
 
 ```bash
 # start the server with READY_COUNTDOWN_MS=300 to make the bot tests fast
-node scripts/sim.mjs http://localhost:8080 4      # 2–4 bots play a full 10-round match: ready-up, kept cards never
+node scripts/sim.mjs http://localhost:8080 6      # 2–6 bots play a full 10-round match (25-card decks at 5–6): ready-up, kept cards never
                                                   # change, results = final hands, totals = sum of rounds, table order
 node scripts/sim-leave.mjs http://localhost:8080  # leavers never block; match ends if one player remains
 node scripts/ui-test.mjs http://localhost:8080    # Playwright: solo game + a full 2-browser match (round reveal,
                                                   # stats, trophy room, saved results), writes screenshots/
+node scripts/ui-six.mjs http://localhost:8080     # Playwright: 6-seat room on desktop + mobile, lock-in badges, results → table
 node scripts/sim-restart.mjs                      # own server: SIGINT mid round 2 + SIGKILL mid round 3; the match
                                                   # must resume with identical hands, steps and scores
 node scripts/live-test.mjs https://your-app 3 45  # real browsers vs a deployed site: 3 rounds, 45 s idle at results
@@ -35,8 +36,34 @@ node scripts/live-test.mjs https://your-app 3 45  # real browsers vs a deployed 
 Rebuild the card pool (no keys needed, ~10 minutes):
 
 ```bash
-npm run build-data      # Wikidata SPARQL + Wikipedia API → player audit → refine → TheSportsDB crests
+npm run build-data      # Wikidata SPARQL + Wikipedia API → player audit → refine → missing images → TheSportsDB crests
+node scripts/pool-stats.mjs cards/pool.json 1500 --samples   # pool health: trait sizes, hand rates, type mix, sample decks
 ```
+
+The pool lives in `cards/pool.json` on the server only (it is not a public file). API responses are cached in
+`/tmp/footdraw-build-cache`, so an interrupted build resumes quickly.
+
+## Card pool
+
+**3,627 cards**: 2,945 players, 358 clubs, 101 national teams, 223 tournaments & competitions, with 2,277 shared traits.
+
+* Players: the 900 best-known (by Wikipedia language editions) plus a random sample of the next ~9,000, so the pool
+  spans eras (1900s–2000s births), leagues and nations, not just superstars. No country supplies more than ~8% of players.
+* Clubs: 140 best-known plus a random sample from the next 900 across many countries.
+* Tournaments: every FIFA World Cup and Euro, plus Copa América, Africa Cup of Nations, Asian Cup, Gold Cup,
+  Confederations Cup, Champions League/European Cup, Europa League, Copa Libertadores, Club World Cup and Cup Winners'
+  Cup editions; the competitions themselves; 45 domestic leagues; 18 national cups.
+* Traits link the types: players ↔ clubs (teams), players ↔ leagues (through their clubs), players ↔ tournament
+  editions and competitions, clubs/nations ↔ editions they won, leagues ↔ their clubs, plus nation, position, awards,
+  birthplace and birth decade.
+* Images: Wikipedia thumbnails, then Wikidata images/logos (a competition edition can use its competition's logo),
+  then TheSportsDB crests. A few obscure players have no free image and show their initial.
+
+**Decks** are built on the server (`/api/deck` for solo; the match server for rounds) with a crypto RNG (the Daily deck
+uses a date seed so everyone gets the same cards). Each deck has a balanced type mix (≈8 players, 3 clubs, 2 national
+teams, 2 competitions, nudged at random) and 2–3 hidden themes (traits several cards share) so hands can form pairs
+and trips; the rest is random. No card repeats within a match, and each browser's last ~450 dealt cards are kept out
+of its next decks and matches. The browser only receives the cards it plays with.
 
 ## Data sources (all keyless)
 
@@ -52,12 +79,15 @@ npm run build-data      # Wikidata SPARQL + Wikipedia API → player audit → r
 
 * `scripts/denylist.txt`: manual removals (titles or QIDs, one per line), e.g. Julio Iglesias, Jason Statham, Jo Nesbø.
 * Senior career check: `scripts/audit-players.mjs` sums each player's recorded senior club appearances + caps
-  (Wikidata P54 with P1350) into `scripts/player-audit.json`. Players with fewer than 20 are dropped.
+  (Wikidata P54 with P1350) into `scripts/player-audit.json`. Players with fewer than 20 are dropped if they are known
+  mainly for something else (singer, actor, politician…) or list fewer than 2 teams (this run removed 157, e.g. Sean
+  Connery, Niels Bohr, Viktor Orbán, O. J. Simpson).
 * Players must have played for at least one club or national team in the pool. Youth and reserve sides don't count.
 
 ## Multiplayer: 10-round match
 
-1. 2–4 players per room (room code or `/room/CODE` link). Your seat is tied to a random token in your browser, so
+1. 2–6 players per room (room code or `/room/CODE` link). Each round's deck has **15 cards with 2–4 players and 25
+   cards with 5–6 players**. Your seat is tied to a random token in your browser, so
    reloads and reconnects put you back in the same seat with the same hand.
 2. **Ready-up:** everyone seated presses **Ready** before the match starts and before every round. Nothing starts
    until all of them (minimum 2) are ready. Then a 3 s countdown runs (`READY_COUNTDOWN_MS`), which is cancelled if anyone
@@ -67,7 +97,9 @@ npm run build-data      # Wikidata SPARQL + Wikipedia API → player audit → r
    simultaneously: tap the cards to swap out, up to two discards, or **Stand**.
 4. Kept cards never change: the server only replaces the exact positions you discarded. Each discard request
    carries the hand you were looking at and the discard step, so stale or double-clicked requests are rejected.
-5. A round ends when everyone has finished. The round timer is 2 minutes (`ROUND_MS`), and anyone still playing auto-stands.
+5. Standing, using both discards or timing out **locks you in**: your screen says “Locked in, waiting for: …” and every
+   seat shows *Locked in ✓* or *Playing…* to everyone. A round ends when everyone is locked in, and then every player's
+   reveal starts at the same moment. The round timer is **1 minute** (`ROUND_MS`, shown as a bar and a seconds countdown); anyone still playing auto-stands with their current hand.
    First, **your own hand's points tally up** (the same reveal as solo: suits pop in, each shared trait adds its
    points, then the hand bonus, counting up to your score). **Skip to results** jumps straight on. This runs only in
    your browser (no extra network traffic) and plays once per round, not again after a reload or reconnect.

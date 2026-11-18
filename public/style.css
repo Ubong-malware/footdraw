@@ -131,8 +131,9 @@ table.wt th:last-child,table.wt td:last-child{text-align:right;font-variant-nume
 .err{color:var(--lose);font-size:.875rem}
 .roomhead{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin-bottom:10px;font-size:.875rem}
 .roomhead .code{font-family:var(--serif);font-size:1.3rem;letter-spacing:.12em}
-.seats{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:12px}
-@media (min-width:720px){.seats{grid-template-columns:repeat(4,1fr)}}
+.seats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:12px}
+@media (min-width:600px){.seats{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (min-width:980px){.seats{grid-template-columns:repeat(6,minmax(0,1fr))}.seats .seat{min-height:72px;padding:7px 8px}.seats .seat .nm{font-size:1rem}}
 .seat{position:relative;padding:8px 10px;font-size:.85rem;background:var(--panel);border:1px solid var(--rule);border-radius:2px;min-height:78px}
 .seat.turn{border-color:var(--ink);box-shadow:0 0 0 2px var(--ink)}
 .seat.folded{opacity:.5}.seat.empty{border-style:dashed;color:var(--ink-soft);display:grid;place-items:center}
@@ -187,3 +188,8 @@ ul.badges li{display:grid;grid-template-columns:auto 1fr;column-gap:8px;padding:
 ul.badges .bi{grid-row:span 2;font-size:1.5rem}ul.badges small{color:var(--ink-soft)}ul.badges li.locked{opacity:.55}
 .scroll{overflow-x:auto;max-width:100%}table.full{min-width:560px}table.full td:nth-child(n+3),table.full th:nth-child(n+3){text-align:right}
 .mpstats .section h2{overflow:hidden}
+.secs{min-width:2.6em;font-size:.85rem;font-weight:700;font-variant-numeric:tabular-nums;color:var(--ink-soft)}
+.seat .lock{font-weight:700}
+.score .lockwait{animation:none;font-weight:600}
+.roundres{width:100%;max-width:640px;margin:8px auto 0;text-align:left}table.rr{margin:8px 0 0}table.rr td.fc{font-size:.8rem;color:var(--ink-soft)}table.rr .isnew{font-weight:700;color:var(--ink)}table.rr tr.lead td{font-weight:700}table.rr td:first-child{width:2.5em}
+h2.tablehead{margin:14px auto 0;max-width:640px;width:100%;font-family:var(--serif);font-size:1.3rem;font-weight:400;text-align:left;border-bottom:1px solid var(--rule)}

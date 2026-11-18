@@ -6,7 +6,7 @@
   "scripts": {
     "test": "node scripts/sim.mjs",
     "start": "node server.js",
-    "build-data": "node scripts/build-data.mjs && node scripts/audit-players.mjs && node scripts/refine.mjs && node scripts/badges.mjs"
+    "build-data": "node scripts/build-data.mjs && node scripts/audit-players.mjs && node scripts/refine.mjs && node scripts/fill-images.mjs && node scripts/badges.mjs"
   },
   "keywords": [],
   "author": "",
